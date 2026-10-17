@@ -6,6 +6,7 @@ import { createHash, randomBytes } from 'node:crypto';
 import { openDb } from './db.js';
 import { PRODUCTS, CATEGORIES, presentProduct, baseUnitsPerPack, monthlyUsage } from './catalog.js';
 import { ApiError, badRequest, notFound, unauthorized, forbidden, conflict } from './errors.js';
+import { MockPayments } from './payments.js';
 
 export const PRICING = {
   subscription_discount_pct: 5,
@@ -27,14 +28,6 @@ const STARTER_SKUS = [
   'LAUN-LIQ-100', 'HSOAP-REFILL-2', 'WIPES-225', 'SPONGE-12', 'TPASTE-4',
 ];
 
-// Mock card tokens, Stripe-style.
-const TEST_CARDS = {
-  pm_card_visa: { brand: 'visa', last4: '4242' },
-  pm_card_mastercard: { brand: 'mastercard', last4: '4444' },
-  pm_card_declined: { brand: 'visa', last4: '0002', fail: 'card_declined' },
-  pm_card_insufficient_funds: { brand: 'visa', last4: '9995', fail: 'insufficient_funds' },
-};
-
 const MAX_ADVANCE_DAYS = 400;
 
 const id = (prefix) => `${prefix}_${randomBytes(9).toString('base64url')}`;
@@ -51,9 +44,21 @@ const isDate = (s) => typeof s === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(s) && 
 const pct = (amount, rate) => Math.round((amount * rate) / 100);
 
 export class Store {
-  constructor({ dbPath = ':memory:' } = {}) {
+  /**
+   * @param {object} opts
+   * @param {string} [opts.dbPath]
+   * @param {import('./payments.js').MockPayments | import('./payments.js').StripePayments} [opts.payments]
+   * @param {'mock' | 'manual'} [opts.fulfillment] mock ships itself on the account clock; manual waits for an operator
+   * @param {'test' | 'live'} [opts.mode] live accounts run on the real clock and cannot advance it
+   */
+  constructor({ dbPath = ':memory:', payments = new MockPayments(), fulfillment = 'mock', mode = 'test' } = {}) {
+    if (!['mock', 'manual'].includes(fulfillment)) throw new Error(`Unknown fulfillment mode '${fulfillment}'.`);
+    if (!['test', 'live'].includes(mode)) throw new Error(`Unknown mode '${mode}'.`);
     this.db = openDb(dbPath);
     this.products = new Map(PRODUCTS.map((x) => [x.sku, x]));
+    this.payments = payments;
+    this.fulfillment = fulfillment;
+    this.mode = mode;
   }
 
   // ---------------------------------------------------------------- catalog
@@ -99,14 +104,14 @@ export class Store {
     if (!Number.isInteger(household_size) || household_size < 1 || household_size > 20) {
       throw badRequest('invalid_param', 'household_size must be an integer from 1 to 20.', { param: 'household_size' });
     }
-    if (start_date != null && !isDate(start_date)) throw badRequest('invalid_param', 'start_date must be YYYY-MM-DD.', { param: 'start_date' });
+    if (start_date != null && (this.mode === 'live' || !isDate(start_date))) throw badRequest('invalid_param', 'start_date must be YYYY-MM-DD, and is only allowed in test mode.', { param: 'start_date' });
     const accountId = id('acct');
-    const apiKey = `ck_test_${randomBytes(18).toString('base64url')}`;
-    const ownerKey = `ok_test_${randomBytes(18).toString('base64url')}`;
+    const apiKey = `ck_${this.mode}_${randomBytes(18).toString('base64url')}`;
+    const ownerKey = `ok_${this.mode}_${randomBytes(18).toString('base64url')}`;
     const now = start_date ? `${start_date}T12:00:00.000Z` : new Date().toISOString();
     const merged = this.#validatePolicy({ ...DEFAULT_POLICY, ...policy });
     this.db.prepare(`INSERT INTO accounts (id, name, email, mode, api_key_hash, owner_key_hash, household_size, policy_json, clock, created_at)
-      VALUES (?, ?, ?, 'test', ?, ?, ?, ?, ?, ?)`).run(accountId, name, email ?? null, hash(apiKey), hash(ownerKey), household_size, j(merged), now, now);
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`).run(accountId, name, email ?? null, this.mode, hash(apiKey), hash(ownerKey), household_size, j(merged), now, now);
     this.#emit(accountId, 'account.created', { account_id: accountId });
     return {
       account: this.getAccount(accountId),
@@ -130,6 +135,7 @@ export class Store {
   #account(accountId) {
     const a = this.db.prepare('SELECT * FROM accounts WHERE id = ?').get(accountId);
     if (!a) throw notFound('account', accountId);
+    if (a.mode === 'live') a.clock = new Date().toISOString();
     return a;
   }
 
@@ -146,6 +152,8 @@ export class Store {
       spend: { month: today.slice(0, 7), spent_cents: this.#monthSpend(a.id, today) },
       clock: a.clock,
       today,
+      payments: this.payments.name,
+      fulfillment: this.fulfillment,
       default_payment_method_id: a.default_payment_method_id,
       default_address_id: a.default_address_id,
       created_at: a.created_at,
@@ -192,19 +200,50 @@ export class Store {
 
   // ---------------------------------------------------- payment & address
 
-  addPaymentMethod(auth, { token, set_default = true } = {}) {
-    const card = TEST_CARDS[token];
-    if (!card) {
-      throw badRequest('invalid_payment_token', `Unknown payment token '${token}'.`, {
-        param: 'token', hint: `Sandbox tokens: ${Object.keys(TEST_CARDS).join(', ')}.`,
-      });
+  async #customer(a) {
+    if (a.provider_customer_id || this.payments.name === 'mock') return a.provider_customer_id;
+    const ref = await this.payments.ensureCustomer({ accountId: a.id, name: a.name, email: a.email });
+    this.db.prepare('UPDATE accounts SET provider_customer_id = ? WHERE id = ?').run(ref, a.id);
+    return ref;
+  }
+
+  #savePm(a, card, setDefault) {
+    const existing = this.db.prepare('SELECT * FROM payment_methods WHERE account_id = ? AND token = ?').get(a.id, card.ref);
+    const pmId = existing?.id ?? id('pm');
+    if (!existing) {
+      this.db.prepare('INSERT INTO payment_methods (id, account_id, token, brand, last4, created_at) VALUES (?, ?, ?, ?, ?, ?)')
+        .run(pmId, a.id, card.ref, card.brand, card.last4, a.clock);
+      this.#emit(a.id, 'payment_method.added', { payment_method_id: pmId, brand: card.brand, last4: card.last4 });
+    }
+    if (setDefault || !a.default_payment_method_id) this.db.prepare('UPDATE accounts SET default_payment_method_id = ? WHERE id = ?').run(pmId, a.id);
+    return this.#presentPm(this.db.prepare('SELECT * FROM payment_methods WHERE id = ?').get(pmId));
+  }
+
+  /** Attach a card from a test token (pm_card_visa, ...). */
+  async addPaymentMethod(auth, { token, set_default = true } = {}) {
+    if (!token || typeof token !== 'string') throw badRequest('missing_param', 'token is required.', { param: 'token', hint: 'In test mode use pm_card_visa.' });
+    const a = this.#account(auth.accountId);
+    const card = await this.payments.attachToken(await this.#customer(a), token);
+    return this.#savePm(a, card, set_default);
+  }
+
+  /** A secure page where the human saves a card. Send the URL to the account owner. */
+  async createCardSetupLink(auth) {
+    if (!this.payments.supportsSetupLinks) {
+      throw badRequest('setup_links_unavailable', 'Card setup links need the Stripe payment provider.', { hint: 'In the sandbox, call add_payment_method with token pm_card_visa instead.' });
     }
     const a = this.#account(auth.accountId);
-    const pmId = id('pm');
-    this.db.prepare('INSERT INTO payment_methods (id, account_id, token, brand, last4, created_at) VALUES (?, ?, ?, ?, ?, ?)')
-      .run(pmId, a.id, token, card.brand, card.last4, a.clock);
-    if (set_default || !a.default_payment_method_id) this.db.prepare('UPDATE accounts SET default_payment_method_id = ? WHERE id = ?').run(pmId, a.id);
-    return this.#presentPm(this.db.prepare('SELECT * FROM payment_methods WHERE id = ?').get(pmId));
+    const link = await this.payments.createSetupLink({ customerRef: await this.#customer(a), accountId: a.id });
+    return { url: link.url, expires_at: link.expires_at, next_step: 'Send this link to the account owner. Once they save a card it becomes the default payment method; check with list_payment_methods.' };
+  }
+
+  /** Called when the human returns from the setup page. */
+  async completeCardSetup(sessionId) {
+    const done = await this.payments.completeSetup(sessionId);
+    if (!done) throw badRequest('setup_incomplete', 'This card setup has not been completed.', { hint: 'Open the setup link again and finish saving the card.' });
+    const a = this.db.prepare('SELECT * FROM accounts WHERE id = ? AND provider_customer_id = ?').get(done.accountId, done.customerRef);
+    if (!a) throw notFound('account', done.accountId);
+    return { account_id: a.id, payment_method: this.#savePm(this.#account(a.id), done.card, true) };
   }
 
   listPaymentMethods(auth) {
@@ -355,7 +394,7 @@ export class Store {
 
   // -------------------------------------------------------------- orders
 
-  createOrder(auth, { items, address_id, payment_method_id } = {}) {
+  async createOrder(auth, { items, address_id, payment_method_id } = {}) {
     const account = this.#account(auth.accountId);
     const norm = this.#normalizeItems(items);
     const { addrId, pmId } = this.#resolveShipPay(account, address_id, payment_method_id);
@@ -372,7 +411,7 @@ export class Store {
     return { addrId, pmId: payId };
   }
 
-  #placeOrder(account, { items, addrId, pmId, subscriptionId }) {
+  async #placeOrder(account, { items, addrId, pmId, subscriptionId }) {
     const priced = this.price(items, { subscription: !!subscriptionId });
     const orderId = id('ord');
     const now = account.clock;
@@ -387,30 +426,35 @@ export class Store {
       this.#emit(account.id, 'approval.requested', { approval_id: apprId, order_id: orderId, reasons });
       return this.getOrder({ accountId: account.id }, orderId);
     }
-    this.#chargeAndFulfill(account, orderId);
+    await this.#chargeAndFulfill(account, orderId);
     return this.getOrder({ accountId: account.id }, orderId);
   }
 
-  #chargeAndFulfill(account, orderId) {
+  async #chargeAndFulfill(account, orderId) {
     const order = this.db.prepare('SELECT * FROM orders WHERE id = ?').get(orderId);
     const pm = this.#pm(account.id, order.payment_method_id);
     const amounts = p(order.amounts_json);
-    const card = TEST_CARDS[pm.token];
+    const prior = p(order.charges_json);
+    const result = await this.payments.charge({
+      amountCents: amounts.total_cents, customerRef: this.#account(account.id).provider_customer_id, pmRef: pm.token, orderId, attempt: prior.length + 1,
+    });
     const charge = {
       id: id('ch'), amount_cents: amounts.total_cents, payment_method_id: pm.id, created_at: account.clock,
-      status: card.fail ? 'failed' : 'succeeded', failure_code: card.fail ?? null,
+      status: result.status, failure_code: result.failure_code, provider_ref: result.ref,
     };
-    const charges = [...p(order.charges_json), charge];
-    if (card.fail) {
+    const charges = [...prior, charge];
+    if (result.status !== 'succeeded') {
       this.db.prepare("UPDATE orders SET status = 'payment_failed', charges_json = ?, updated_at = ? WHERE id = ?").run(j(charges), account.clock, orderId);
-      this.#emit(account.id, 'order.payment_failed', { order_id: orderId, failure_code: card.fail });
+      this.#emit(account.id, 'order.payment_failed', { order_id: orderId, failure_code: result.failure_code });
       return false;
     }
     this.db.prepare("UPDATE orders SET status = 'paid', charges_json = ?, updated_at = ? WHERE id = ?").run(j(charges), account.clock, orderId);
     const today = dateOf(account.clock);
     const shipId = id('shp');
+    const mock = this.fulfillment === 'mock';
     this.db.prepare(`INSERT INTO shipments (id, order_id, account_id, status, carrier, tracking_number, created_at, estimated_delivery_date)
-      VALUES (?, ?, ?, 'processing', 'mock_ground', ?, ?, ?)`).run(shipId, orderId, account.id, `MOCK${randomBytes(6).toString('hex').toUpperCase()}`, account.clock, addDays(today, 3));
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?)`).run(shipId, orderId, account.id, mock ? 'processing' : 'awaiting_fulfillment',
+      mock ? 'mock_ground' : '', mock ? `MOCK${randomBytes(6).toString('hex').toUpperCase()}` : '', account.clock, addDays(today, mock ? 3 : 5));
     this.#emit(account.id, 'order.paid', { order_id: orderId, amount_cents: amounts.total_cents });
     this.#emit(account.id, 'shipment.created', { shipment_id: shipId, order_id: orderId });
     return true;
@@ -446,7 +490,7 @@ export class Store {
       charges: p(o.charges_json),
       approval: appr ? this.#presentApproval(appr) : null,
       shipment: s ? {
-        id: s.id, status: s.status, carrier: s.carrier, tracking_number: s.tracking_number,
+        id: s.id, status: s.status, carrier: s.carrier || null, tracking_number: s.tracking_number || null,
         estimated_delivery_date: s.estimated_delivery_date, shipped_at: s.shipped_at, delivered_at: s.delivered_at,
       } : null,
       created_at: o.created_at,
@@ -471,7 +515,7 @@ export class Store {
     };
   }
 
-  decideApproval(auth, approvalId, decision) {
+  async decideApproval(auth, approvalId, decision) {
     if (auth.role !== 'owner') throw forbidden('Only the account owner can approve or reject orders.', 'Tell the human an approval is waiting; they resolve it with their owner_key.');
     const account = this.#account(auth.accountId);
     const a = this.db.prepare('SELECT * FROM approvals WHERE id = ? AND account_id = ?').get(approvalId, account.id);
@@ -480,7 +524,7 @@ export class Store {
     this.db.prepare('UPDATE approvals SET status = ?, decided_at = ? WHERE id = ?').run(decision === 'approve' ? 'approved' : 'rejected', account.clock, a.id);
     this.#emit(account.id, `approval.${decision === 'approve' ? 'approved' : 'rejected'}`, { approval_id: a.id, order_id: a.order_id });
     if (decision === 'approve') {
-      this.#chargeAndFulfill(account, a.order_id);
+      await this.#chargeAndFulfill(account, a.order_id);
       this.#syncSubscriptionAfterPayment(account, a.order_id);
     } else {
       this.db.prepare("UPDATE orders SET status = 'canceled', updated_at = ? WHERE id = ?").run(account.clock, a.order_id);
@@ -497,7 +541,7 @@ export class Store {
     }
   }
 
-  createSubscription(auth, { items, cadence_days = 28, start_date, address_id, payment_method_id, metadata = {} } = {}) {
+  async createSubscription(auth, { items, cadence_days = 28, start_date, address_id, payment_method_id, metadata = {} } = {}) {
     const account = this.#account(auth.accountId);
     const norm = this.#normalizeItems(items);
     this.#validateCadence(cadence_days);
@@ -510,7 +554,7 @@ export class Store {
     this.db.prepare(`INSERT INTO subscriptions (id, account_id, status, items_json, cadence_days, next_order_date, address_id, payment_method_id, metadata_json, created_at, updated_at)
       VALUES (?, ?, 'active', ?, ?, ?, ?, ?, ?, ?, ?)`).run(subId, account.id, j(norm), cadence_days, start_date ?? today, addrId, pmId, j(metadata), account.clock, account.clock);
     this.#emit(account.id, 'subscription.created', { subscription_id: subId });
-    this.#runDue(account.id);
+    await this.#runDue(account.id);
     return this.getSubscription(auth, subId);
   }
 
@@ -565,7 +609,7 @@ export class Store {
     if (s.status === 'canceled') throw conflict('subscription_canceled', 'This subscription is canceled.', { hint: 'Create a new subscription instead.' });
   }
 
-  updateSubscription(auth, subId, { items, cadence_days, next_order_date, address_id, payment_method_id, metadata } = {}) {
+  async updateSubscription(auth, subId, { items, cadence_days, next_order_date, address_id, payment_method_id, metadata } = {}) {
     const account = this.#account(auth.accountId);
     const s = this.#sub(account.id, subId);
     this.#requireNotCanceled(s);
@@ -586,7 +630,7 @@ export class Store {
     // A new card on a past-due subscription retries the failed order right away.
     if (s.status === 'past_due' && payment_method_id !== undefined && s.failed_order_id) {
       this.db.prepare('UPDATE orders SET payment_method_id = ? WHERE id = ?').run(payment_method_id, s.failed_order_id);
-      if (this.#chargeAndFulfill(this.#account(account.id), s.failed_order_id)) this.#syncSubscriptionAfterPayment(this.#account(account.id), s.failed_order_id);
+      if (await this.#chargeAndFulfill(this.#account(account.id), s.failed_order_id)) this.#syncSubscriptionAfterPayment(this.#account(account.id), s.failed_order_id);
     }
     return this.getSubscription(auth, s.id);
   }
@@ -602,13 +646,13 @@ export class Store {
     return this.getSubscription(auth, s.id);
   }
 
-  resumeSubscription(auth, subId) {
+  async resumeSubscription(auth, subId) {
     const account = this.#account(auth.accountId);
     const s = this.#sub(account.id, subId);
     this.#requireNotCanceled(s);
     if (s.status !== 'paused') throw conflict('not_paused', `Subscription is ${s.status}, not paused.`);
     this.#resume(account, s);
-    this.#runDue(account.id);
+    await this.#runDue(account.id);
     return this.getSubscription(auth, s.id);
   }
 
@@ -628,14 +672,14 @@ export class Store {
     return this.getSubscription(auth, s.id);
   }
 
-  shipNow(auth, subId) {
+  async shipNow(auth, subId) {
     const account = this.#account(auth.accountId);
     const s = this.#sub(account.id, subId);
     this.#requireNotCanceled(s);
     if (s.status === 'past_due') throw conflict('subscription_past_due', 'The last payment failed.', { hint: 'Update payment_method_id on the subscription to retry it first.' });
     this.#touch(account, s.id, { next_order_date: dateOf(account.clock) });
     if (s.status === 'paused') this.#resume(account, { ...s, next_order_date: dateOf(account.clock) });
-    this.#runDue(account.id);
+    await this.#runDue(account.id);
     return this.getSubscription(auth, s.id);
   }
 
@@ -643,7 +687,7 @@ export class Store {
    * Agents rarely know exact usage; they do notice "we're out" or "the closet is
    * full". Feed that back and the cadence adjusts.
    */
-  reportSignal(auth, subId, { signal } = {}) {
+  async reportSignal(auth, subId, { signal } = {}) {
     const account = this.#account(auth.accountId);
     const s = this.#sub(account.id, subId);
     this.#requireNotCanceled(s);
@@ -651,7 +695,7 @@ export class Store {
       const cadence = Math.max(7, Math.round(s.cadence_days * 0.85));
       this.#touch(account, s.id, { cadence_days: cadence });
       this.#emit(account.id, 'subscription.cadence_adjusted', { subscription_id: s.id, from: s.cadence_days, to: cadence, signal });
-      return this.shipNow(auth, s.id);
+      return await this.shipNow(auth, s.id);
     }
     if (signal === 'overstocked') {
       const cadence = Math.min(180, Math.round(s.cadence_days * 1.15));
@@ -674,7 +718,7 @@ export class Store {
   // ----------------------------------------------- scheduler & test clock
 
   /** Run everything due on the account's current date: renewals and shipment progress. */
-  #runDue(accountId) {
+  async #runDue(accountId) {
     const account = this.#account(accountId);
     const today = dateOf(account.clock);
 
@@ -683,11 +727,15 @@ export class Store {
     }
 
     for (const s of this.db.prepare("SELECT * FROM subscriptions WHERE account_id = ? AND status = 'active' AND next_order_date <= ?").all(accountId, today)) {
-      this.#touch(account, s.id, { next_order_date: addDays(today, s.cadence_days) });
-      const order = this.#placeOrder(account, { items: p(s.items_json), addrId: s.address_id, pmId: s.payment_method_id, subscriptionId: s.id });
+      // Claim this renewal before charging so overlapping runs never order twice.
+      const claimed = this.db.prepare("UPDATE subscriptions SET next_order_date = ?, updated_at = ? WHERE id = ? AND status = 'active' AND next_order_date = ?")
+        .run(addDays(today, s.cadence_days), account.clock, s.id, s.next_order_date);
+      if (claimed.changes !== 1) continue;
+      const order = await this.#placeOrder(account, { items: p(s.items_json), addrId: s.address_id, pmId: s.payment_method_id, subscriptionId: s.id });
       this.#syncSubscriptionAfterPayment(this.#account(accountId), order.id);
     }
 
+    if (this.fulfillment !== 'mock') return;
     for (const sh of this.db.prepare("SELECT * FROM shipments WHERE account_id = ? AND status IN ('processing', 'shipped')").all(accountId)) {
       if (sh.status === 'processing' && addDays(dateOf(sh.created_at), 1) <= today) {
         this.db.prepare("UPDATE shipments SET status = 'shipped', shipped_at = ? WHERE id = ?").run(account.clock, sh.id);
@@ -715,7 +763,7 @@ export class Store {
   }
 
   /** Sandbox only: move the account's clock forward day by day, running renewals and shipping. */
-  advanceClock(auth, { days = 1 } = {}) {
+  async advanceClock(auth, { days = 1 } = {}) {
     if (!Number.isInteger(days) || days < 1 || days > MAX_ADVANCE_DAYS) throw badRequest('invalid_param', `days must be an integer from 1 to ${MAX_ADVANCE_DAYS}.`, { param: 'days' });
     const account = this.#account(auth.accountId);
     if (account.mode !== 'test') throw forbidden('The clock can only be advanced in test mode.');
@@ -724,15 +772,58 @@ export class Store {
       const a = this.#account(account.id);
       const next = new Date(Date.parse(a.clock) + 86_400_000).toISOString();
       this.db.prepare('UPDATE accounts SET clock = ? WHERE id = ?').run(next, a.id);
-      this.#runDue(a.id);
+      await this.#runDue(a.id);
     }
     return { account: this.getAccount(account.id), events: this.listEvents(auth, { after: before, limit: 1000 }).data };
+  }
+
+  /** Live mode scheduler tick: run renewals for every live account. */
+  async runAllDue() {
+    const ids = this.db.prepare("SELECT DISTINCT account_id AS id FROM subscriptions s JOIN accounts a ON a.id = s.account_id WHERE a.mode = 'live' AND s.status IN ('active', 'paused')").all();
+    for (const { id: accountId } of ids) await this.#runDue(accountId);
+    return ids.length;
+  }
+
+  // ---------------------------------------------- operator (concierge) fulfillment
+
+  /** Paid orders the operator still has to buy and ship, oldest first. */
+  listFulfillmentQueue({ status = 'awaiting_fulfillment' } = {}) {
+    return this.db.prepare(`SELECT o.*, s.status AS shipment_status, a.name AS account_name, a.email AS account_email
+      FROM shipments s JOIN orders o ON o.id = s.order_id JOIN accounts a ON a.id = o.account_id
+      WHERE s.status = ? ORDER BY o.created_at, o.rowid`).all(status).map((o) => ({
+      ...this.#presentOrder(o),
+      account: { id: o.account_id, name: o.account_name, email: o.account_email },
+      ship_to: p(this.db.prepare('SELECT json FROM addresses WHERE id = ?').get(o.address_id).json),
+    }));
+  }
+
+  #operatorShipment(orderId, from) {
+    const sh = this.db.prepare('SELECT * FROM shipments WHERE order_id = ?').get(orderId);
+    if (!sh) throw notFound('shipment', orderId, 'Only paid orders have shipments.');
+    if (sh.status !== from) throw conflict('invalid_shipment_state', `Shipment is ${sh.status}, expected ${from}.`);
+    return sh;
+  }
+
+  markShipped(orderId, { carrier, tracking_number } = {}) {
+    if (!carrier || !tracking_number) throw badRequest('missing_param', 'carrier and tracking_number are required.', { hint: 'e.g. carrier "UPS", tracking_number "1Z..."' });
+    const sh = this.#operatorShipment(orderId, 'awaiting_fulfillment');
+    const now = this.#account(sh.account_id).clock;
+    this.db.prepare("UPDATE shipments SET status = 'shipped', carrier = ?, tracking_number = ?, shipped_at = ? WHERE id = ?").run(carrier, tracking_number, now, sh.id);
+    this.#emit(sh.account_id, 'shipment.shipped', { shipment_id: sh.id, order_id: orderId, carrier, tracking_number });
+    return this.#presentOrder(this.db.prepare('SELECT * FROM orders WHERE id = ?').get(orderId));
+  }
+
+  markDelivered(orderId) {
+    const sh = this.#operatorShipment(orderId, 'shipped');
+    this.db.prepare("UPDATE shipments SET status = 'delivered', delivered_at = ? WHERE id = ?").run(this.#account(sh.account_id).clock, sh.id);
+    this.#emit(sh.account_id, 'shipment.delivered', { shipment_id: sh.id, order_id: orderId });
+    return this.#presentOrder(this.db.prepare('SELECT * FROM orders WHERE id = ?').get(orderId));
   }
 
   // -------------------------------------------------------------- events
 
   #emit(accountId, type, data) {
-    const a = this.db.prepare('SELECT clock FROM accounts WHERE id = ?').get(accountId);
+    const a = this.#account(accountId);
     this.db.prepare('INSERT INTO events (id, account_id, type, data_json, created_at) VALUES (?, ?, ?, ?, ?)').run(id('evt'), accountId, type, j(data), a.clock);
   }
 
@@ -756,17 +847,25 @@ export class Store {
    * Run `fn` once per (account, key). Replays return the stored result; reusing
    * a key with a different request is an error.
    */
-  idempotent(auth, key, fingerprint, fn) {
+  async idempotent(auth, key, fingerprint, fn) {
     if (!key) return fn();
     const prior = this.db.prepare('SELECT * FROM idempotency WHERE account_id = ? AND key = ?').get(auth.accountId, key);
     if (prior) {
       if (prior.fingerprint !== fingerprint) throw conflict('idempotency_key_reused', 'This idempotency key was already used with a different request.', { hint: 'Use a fresh key for a new operation.' });
+      if (prior.response_json === 'null') throw conflict('idempotent_request_in_progress', 'A request with this idempotency key is still running.', { hint: 'Retry in a moment with the same key.' });
       return { ...p(prior.response_json), idempotent_replay: true };
     }
-    const result = fn();
-    this.db.prepare('INSERT INTO idempotency (account_id, key, fingerprint, response_json, created_at) VALUES (?, ?, ?, ?, ?)')
-      .run(auth.accountId, key, fingerprint, j(result), new Date().toISOString());
-    return result;
+    // Reserve the key first so a concurrent retry can't run the operation twice.
+    this.db.prepare("INSERT INTO idempotency (account_id, key, fingerprint, response_json, created_at) VALUES (?, ?, ?, 'null', ?)")
+      .run(auth.accountId, key, fingerprint, new Date().toISOString());
+    try {
+      const result = await fn();
+      this.db.prepare('UPDATE idempotency SET response_json = ? WHERE account_id = ? AND key = ?').run(j(result), auth.accountId, key);
+      return result;
+    } catch (err) {
+      this.db.prepare('DELETE FROM idempotency WHERE account_id = ? AND key = ?').run(auth.accountId, key);
+      throw err;
+    }
   }
 }
 

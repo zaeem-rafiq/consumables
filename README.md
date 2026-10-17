@@ -12,7 +12,32 @@ The store is built for agents first. It has an HTTP API and an MCP server, and b
 - **Self-describing.** `/llms.txt`, `/openapi.json`, MCP tool annotations and server instructions all ship with the server. Every error carries `code`, `message` and a `hint` that says what to do next.
 - **Test clock.** `advance_test_clock` / `POST /v1/test/clock/advance` jumps forward in time so you can watch renewals, shipping, deliveries, declines and auto-resume happen.
 
-Payments and fulfillment are **mocked**. Use Stripe-style card tokens (`pm_card_visa`, `pm_card_declined`, `pm_card_insufficient_funds`). Shipments go `processing → shipped → delivered` over 3 days on the account clock.
+## Payments
+
+By default payments are mocked, using Stripe-style test tokens (`pm_card_visa`, `pm_card_declined`, `pm_card_insufficient_funds`).
+
+Set `STRIPE_SECRET_KEY` to use real Stripe:
+
+- The agent calls `create_card_setup_link` (`POST /v1/payment_methods/setup_link`) and sends the URL to the human. The human saves a card on Stripe's hosted page and lands on `/setup/complete`, and that card becomes the default.
+- Every order is charged off-session with a Stripe PaymentIntent, using an idempotency key per order attempt so retries never double-charge. A declined charge puts the subscription in `past_due`.
+- With an `sk_test_` key, test tokens such as `pm_card_visa` also work. An `sk_live_` key switches accounts to live mode, which uses the real clock and a renewal scheduler that runs every 15 minutes. It also refuses test tokens.
+
+## Fulfillment
+
+- `FULFILLMENT=mock` (default): shipments go `processing → shipped → delivered` over 3 days on the account clock.
+- `FULFILLMENT=manual` (concierge): paid orders wait as `awaiting_fulfillment`. The operator opens `/admin?key=ADMIN_KEY` and sees a combined shopping list plus every order with its address. They buy the items, enter the carrier and tracking number, and later mark the order delivered. Each step emits `shipment.shipped` / `shipment.delivered` events the agent can see.
+
+## Configuration
+
+| Variable | Purpose |
+|---|---|
+| `PORT`, `CONSUMABLES_DB` | Server port (default 8787) and SQLite file |
+| `PUBLIC_URL` | Public base URL. Required with Stripe. |
+| `STRIPE_SECRET_KEY` | Turns on real Stripe payments |
+| `FULFILLMENT` | `mock` or `manual` |
+| `ADMIN_KEY` | Turns on the `/admin` operator page |
+
+Live mode (an `sk_live_` key) refuses to start unless `FULFILLMENT=manual` and `ADMIN_KEY` are set, so real orders always reach a person.
 
 See [docs/STRATEGY.md](docs/STRATEGY.md) for how this becomes the default store for agentic shopping.
 
@@ -22,8 +47,8 @@ Requires Node 22.5+. It uses the built-in `node:sqlite`, so there are no native 
 
 ```bash
 npm install
-npm test          # 19 tests: store, HTTP API, MCP (in-memory + Streamable HTTP)
-npm start         # HTTP API + remote MCP on http://localhost:8787 (PORT, CONSUMABLES_DB, PUBLIC_URL)
+npm test          # 29 tests: store, HTTP API, MCP, Stripe (faked API), concierge fulfillment
+npm start         # HTTP API + remote MCP on http://localhost:8787 (see Configuration below)
 npm run mcp       # local MCP server over stdio
 ```
 
@@ -41,7 +66,7 @@ Claude Code, remote HTTP:
 claude mcp add --transport http consumables http://localhost:8787/mcp --header "Authorization: Bearer ck_test_..."
 ```
 
-Over stdio with no key, the agent calls `create_sandbox_account` and the new key attaches to the session. To reuse an account, set `CONSUMABLES_API_KEY`.
+Over stdio with no key, the agent calls `create_account` and the new key attaches to the session. To reuse an account, set `CONSUMABLES_API_KEY`.
 
 ## HTTP quickstart
 
@@ -61,13 +86,15 @@ The full endpoint list is in `GET /llms.txt`.
 
 ## MCP tools
 
-`list_categories`, `search_products`, `get_product`, `recommend_bundle`, `quote`, `create_sandbox_account`, `get_account`, `update_household`, `add_payment_method`, `list_payment_methods`, `add_address`, `list_addresses`, `create_subscription`, `list_subscriptions`, `get_subscription`, `update_subscription`, `pause_subscription`, `resume_subscription`, `skip_next_delivery`, `ship_now`, `report_supply_level`, `cancel_subscription`, `place_order`, `list_orders`, `get_order`, `list_approvals`, `list_events`, `advance_test_clock`.
+`list_categories`, `search_products`, `get_product`, `recommend_bundle`, `quote`, `create_account`, `get_account`, `update_household`, `create_card_setup_link`, `add_payment_method`, `list_payment_methods`, `add_address`, `list_addresses`, `create_subscription`, `list_subscriptions`, `get_subscription`, `update_subscription`, `pause_subscription`, `resume_subscription`, `skip_next_delivery`, `ship_now`, `report_supply_level`, `cancel_subscription`, `place_order`, `list_orders`, `get_order`, `list_approvals`, `list_events`, `advance_test_clock`.
 
 ## Layout
 
 ```
 src/catalog.js   seed catalog (23 SKUs, 6 categories) + usage models
 src/store.js     all business logic: pricing, policy, subscriptions, billing, fulfillment, events, idempotency
+src/payments.js  MockPayments and StripePayments (REST, no SDK)
+src/admin.js     operator fulfillment page and card-setup result pages
 src/http.js      JSON API, /mcp (Streamable HTTP, stateless), /openapi.json, /llms.txt
 src/mcp.js       MCP tool definitions over the store
 bin/             server.js (HTTP) and mcp-stdio.js
@@ -84,4 +111,4 @@ test/            node:test suites
 
 ## Not built yet
 
-Real payments (Stripe), a real 3PL, Postgres, outbound webhooks, OAuth for the remote MCP endpoint, an owner approval UI (email/SMS link), and live mode. See the roadmap in the strategy doc.
+Hosting, Postgres, Stripe webhooks (for disputes and refunds), outbound webhooks to agents, OAuth for the remote MCP endpoint, an owner approval UI (email/SMS link), and dropship or 3PL fulfillment. See the roadmap in the strategy doc.

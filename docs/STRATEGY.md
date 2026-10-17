@@ -15,7 +15,7 @@ When someone tells an agent "we're out of paper towels" or "keep the house stock
 | Supabase lever | What it means | Our version |
 |---|---|---|
 | Built on Postgres, which models already know | Agents write correct code against it on the first try | Copy Stripe's API shape (ids like `sub_`, `pm_card_visa` test tokens, idempotency keys, test clocks), which models have seen millions of times. **In the MVP.** |
-| Instant provisioning, free tier | An agent can create a project with no human in the loop | `create_sandbox_account` in one call, plus a full sandbox with a test clock. **In the MVP.** Live mode needs one human step: claim the account and add a card. |
+| Instant provisioning, free tier | An agent can create a project with no human in the loop | `create_account` in one call, plus a full sandbox with a test clock. **In the MVP.** Live mode needs one human step: claim the account and add a card. |
 | A first-class MCP server and LLM-friendly docs | Tools are discoverable inside the agent | MCP over stdio and Streamable HTTP, tool annotations, server instructions, `/llms.txt`, `/openapi.json`, and errors that carry a `hint`. **In the MVP.** |
 | Distribution through the builders | The platform picks Supabase for the user | Get listed as the default "household supplies" tool in assistant connector directories (Claude, ChatGPT apps, Gemini) and MCP registries, and partner with personal-assistant apps. |
 | Trust (RLS, auth, backups) | Safe to hand to agents | **Owner-controlled spend policy and approvals.** The agent can never approve its own order or raise its own limit. This is the main reason a human would let *this* store run unattended. **In the MVP.** |

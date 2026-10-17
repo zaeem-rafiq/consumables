@@ -7,6 +7,7 @@ import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/
 import { ApiError, badRequest } from './errors.js';
 import { buildMcpServer } from './mcp.js';
 import { PRICING } from './store.js';
+import { fulfillmentPage, messagePage } from './admin.js';
 
 const MAX_BODY = 1_000_000;
 
@@ -23,7 +24,8 @@ function routes(store) {
     ['PATCH', '/v1/account', 'Update { household_size?, name?, email? }', 'agent', ({ auth, body }) => store.updateAccount(auth, body)],
     ['PATCH', '/v1/account/policy', 'Owner only: update spend policy', 'owner', ({ auth, body }) => store.updatePolicy(auth, body)],
 
-    ['POST', '/v1/payment_methods', 'Add a card { token } (sandbox: pm_card_visa, pm_card_declined, ...)', 'agent', ({ auth, body }) => store.addPaymentMethod(auth, body)],
+    ['POST', '/v1/payment_methods', 'Test mode: add a card from a token { token } (pm_card_visa, pm_card_declined, ...)', 'agent', ({ auth, body }) => store.addPaymentMethod(auth, body)],
+    ['POST', '/v1/payment_methods/setup_link', 'Get a secure page where the human saves a card; send the url to the owner', 'agent', ({ auth }) => store.createCardSetupLink(auth)],
     ['GET', '/v1/payment_methods', 'List cards', 'agent', ({ auth }) => ({ data: store.listPaymentMethods(auth) })],
     ['POST', '/v1/addresses', 'Add a US shipping address', 'agent', ({ auth, body }) => store.addAddress(auth, body)],
     ['GET', '/v1/addresses', 'List addresses', 'agent', ({ auth }) => ({ data: store.listAddresses(auth) })],
@@ -92,7 +94,7 @@ function llmsTxt(table, baseUrl) {
 
 ## Quickstart
 1. POST /v1/accounts {"name":"My household","household_size":3} -> api_key (for you) and owner_key (give it to the human).
-2. POST /v1/payment_methods {"token":"pm_card_visa"} and POST /v1/addresses {...}
+2. POST /v1/payment_methods/setup_link and send the url to the human to save a card (test mode: POST /v1/payment_methods {"token":"pm_card_visa"}). Then POST /v1/addresses {...}
 3. POST /v1/recommendations {} -> a bundle sized to the household
 4. POST /v1/subscriptions {"items":[...],"cadence_days":28}
 5. Manage: PATCH, /pause, /resume, /skip, /ship_now, /supply_signal, /cancel
@@ -108,7 +110,7 @@ ${table.map((r) => `- ${r.method} ${r.path}: ${r.summary}${r.auth === 'owner' ? 
 `;
 }
 
-async function readBody(req) {
+async function readBody(req, { form = false } = {}) {
   const chunks = [];
   let size = 0;
   for await (const c of req) {
@@ -118,6 +120,7 @@ async function readBody(req) {
   }
   if (!size) return undefined;
   const raw = Buffer.concat(chunks).toString('utf8');
+  if (form && !raw.trimStart().startsWith('{')) return Object.fromEntries(new URLSearchParams(raw));
   try {
     return JSON.parse(raw);
   } catch {
@@ -136,7 +139,32 @@ function bearer(req) {
   return h.toLowerCase().startsWith('bearer ') ? h.slice(7).trim() : null;
 }
 
-export function createApp(store, { baseUrl } = {}) {
+/**
+ * Operator pages for concierge fulfillment. Auth is a shared ADMIN_KEY passed
+ * as ?key= so the page works from a bookmark on a phone.
+ */
+async function handleAdmin(store, req, res, url, adminKey) {
+  if (!adminKey) throw new ApiError(404, 'route_not_found', 'Admin pages are disabled.', { hint: 'Set ADMIN_KEY to enable them.' });
+  if (url.searchParams.get('key') !== adminKey) return send(res, 401, messagePage('Not allowed', 'This link is missing the admin key.'), 'text/html');
+  const back = () => { res.writeHead(303, { location: `/admin?key=${encodeURIComponent(adminKey)}` }); res.end(); };
+  if (req.method === 'GET' && url.pathname === '/admin') {
+    return send(res, 200, fulfillmentPage({
+      awaiting: store.listFulfillmentQueue({ status: 'awaiting_fulfillment' }),
+      shipped: store.listFulfillmentQueue({ status: 'shipped' }),
+      key: adminKey,
+    }), 'text/html');
+  }
+  if (req.method === 'GET' && url.pathname === '/admin/orders.json') return send(res, 200, { data: store.listFulfillmentQueue({ status: url.searchParams.get('status') ?? 'awaiting_fulfillment' }) });
+  const m = /^\/admin\/orders\/([^/]+)\/(ship|deliver)$/.exec(url.pathname);
+  if (req.method === 'POST' && m) {
+    const body = (await readBody(req, { form: true })) ?? {};
+    const order = m[2] === 'ship' ? store.markShipped(m[1], body) : store.markDelivered(m[1]);
+    return (req.headers['content-type'] ?? '').includes('json') ? send(res, 200, order) : back();
+  }
+  throw new ApiError(404, 'route_not_found', `No route ${req.method} ${url.pathname}.`);
+}
+
+export function createApp(store, { baseUrl, adminKey } = {}) {
   const table = routes(store);
 
   const handleMcp = async (req, res, url) => {
@@ -169,6 +197,16 @@ export function createApp(store, { baseUrl } = {}) {
         });
       }
       if (req.method === 'GET' && url.pathname === '/health') return send(res, 200, { ok: true });
+      if (url.pathname === '/admin' || url.pathname.startsWith('/admin/')) return await handleAdmin(store, req, res, url, adminKey);
+      if (req.method === 'GET' && url.pathname === '/setup/complete') {
+        try {
+          await store.completeCardSetup(url.searchParams.get('session_id') ?? '');
+          return send(res, 200, messagePage('Card saved', 'Your card is saved for Consumables orders. You can close this tab; your agent will take it from here.'), 'text/html');
+        } catch (err) {
+          return send(res, err.status ?? 500, messagePage('Card not saved', err.hint ?? 'Something went wrong. Please try the link again.'), 'text/html');
+        }
+      }
+      if (req.method === 'GET' && url.pathname === '/setup/canceled') return send(res, 200, messagePage('No card saved', 'You closed the card page before saving. Ask your agent for a new link when you are ready.'), 'text/html');
       if (req.method === 'GET' && url.pathname === '/openapi.json') return send(res, 200, openapi(table, base));
       if (req.method === 'GET' && url.pathname === '/llms.txt') return send(res, 200, llmsTxt(table, base), 'text/plain');
 
@@ -192,19 +230,22 @@ export function createApp(store, { baseUrl } = {}) {
       const run = () => route.handler({ auth, params, query, body });
       const idemKey = req.headers['idempotency-key'];
       const result = auth && idemKey && req.method !== 'GET'
-        ? store.idempotent(auth, `http:${idemKey}`, createHash('sha256').update(`${req.method} ${url.pathname} ${JSON.stringify(body)}`).digest('hex'), run)
-        : run();
+        ? await store.idempotent(auth, `http:${idemKey}`, createHash('sha256').update(`${req.method} ${url.pathname} ${JSON.stringify(body)}`).digest('hex'), run)
+        : await run();
       const status = req.method === 'POST' && /^\/v1\/(accounts|subscriptions|orders|payment_methods|addresses)$/.test(url.pathname) && !result?.idempotent_replay ? 201 : 200;
       return send(res, status, result);
     } catch (err) {
-      if (err instanceof ApiError) return send(res, err.status, err.toJSON());
+      if (err instanceof ApiError) {
+        if (url.pathname.startsWith('/admin') && !(req.headers['content-type'] ?? '').includes('json')) return send(res, err.status, messagePage('Could not update order', err.message), 'text/html');
+        return send(res, err.status, err.toJSON());
+      }
       console.error(err);
       return send(res, 500, { error: { code: 'internal_error', message: 'Something went wrong on our side.', hint: 'Retry with the same Idempotency-Key.' } });
     }
   };
 }
 
-export function startServer(store, { port = 8787, host = '0.0.0.0', baseUrl } = {}) {
-  const server = createServer(createApp(store, { baseUrl }));
+export function startServer(store, { port = 8787, host = '0.0.0.0', baseUrl, adminKey } = {}) {
+  const server = createServer(createApp(store, { baseUrl, adminKey }));
   return new Promise((resolve) => server.listen(port, host, () => resolve(server)));
 }

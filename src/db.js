@@ -13,6 +13,7 @@ CREATE TABLE IF NOT EXISTS accounts (
   clock TEXT NOT NULL,
   default_payment_method_id TEXT,
   default_address_id TEXT,
+  provider_customer_id TEXT,
   created_at TEXT NOT NULL
 );
 CREATE TABLE IF NOT EXISTS payment_methods (
@@ -107,5 +108,8 @@ export function openDb(path = ':memory:') {
   const db = new DatabaseSync(path);
   db.exec('PRAGMA journal_mode = WAL;');
   db.exec(SCHEMA);
+  // Columns added after the first release.
+  const cols = db.prepare('PRAGMA table_info(accounts)').all().map((c) => c.name);
+  if (!cols.includes('provider_customer_id')) db.exec('ALTER TABLE accounts ADD COLUMN provider_customer_id TEXT');
   return db;
 }

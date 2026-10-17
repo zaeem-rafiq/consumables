@@ -38,7 +38,7 @@ test('agent goes from zero to subscription over MCP (stdio-style session)', asyn
   assert.equal(noAuth.isError, true);
   assert.match(parse(noAuth).error.hint, /POST \/v1\/accounts/);
 
-  const acct = parse(await call('create_sandbox_account', { name: 'MCP home', household_size: 4, payment_token: 'pm_card_visa', address: ADDRESS }));
+  const acct = parse(await call('create_account', { name: 'MCP home', household_size: 4, payment_token: 'pm_card_visa', address: ADDRESS }));
   assert.ok(acct.api_key.startsWith('ck_test_'));
   assert.ok(acct.account.default_payment_method_id);
 

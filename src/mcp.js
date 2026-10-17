@@ -15,12 +15,12 @@ const INSTRUCTIONS = `Consumables sells everyday household supplies (toilet pape
 Typical flow: recommend_bundle -> quote -> create_subscription. Then manage with update_subscription, pause_subscription, skip_next_delivery, ship_now, report_supply_level and cancel_subscription.
 Prices are integer cents (USD). Subscriptions get 5% off; orders of $35+ after discount ship free.
 Spend policy is set by the human owner. Orders over policy are held with status "requires_approval"; tell the human, do not retry. Agents cannot approve orders or raise limits.
-No account yet? Call create_sandbox_account: it returns an api_key and attaches it to this session (stdio), and sets up a test card and address if you pass them.
+No account yet? Call create_account: it returns an api_key and attaches it to this session (stdio). To pay, call create_card_setup_link and send the URL to the human so they can save a card (in test mode you can pass payment_token pm_card_visa instead).
 Sandbox only: advance_test_clock moves time forward to simulate renewals and deliveries.`;
 
 /**
  * @param {import('./store.js').Store} store
- * @param {{ apiKey?: string }} session  mutable; create_sandbox_account sets apiKey when allowed
+ * @param {{ apiKey?: string }} session  mutable; create_account sets apiKey when allowed
  * @param {{ attachKeyOnSignup?: boolean }} opts
  */
 export function buildMcpServer(store, session, { attachKeyOnSignup = true } = {}) {
@@ -76,22 +76,22 @@ export function buildMcpServer(store, session, { attachKeyOnSignup = true } = {}
   }, (args) => store.recommend(session.apiKey ? auth() : null, args));
 
   // ---- account
-  tool('create_sandbox_account', {
-    title: 'Create sandbox account',
-    description: 'Create a test-mode account. Returns an agent api_key and an owner_key for the human. Optionally attaches a test card and shipping address so you can subscribe right away.',
+  tool('create_account', {
+    title: 'Create account',
+    description: 'Create an account. Returns an agent api_key and an owner_key for the human. Optionally attaches a test card (test mode only) and a shipping address so you can subscribe right away.',
     input: {
       name: z.string().describe('Household name'),
       email: z.string().optional(),
       household_size: z.number().int().min(1).max(20).default(2),
-      payment_token: z.string().optional().describe('Sandbox card token, e.g. pm_card_visa'),
+      payment_token: z.string().optional().describe('Test mode card token, e.g. pm_card_visa'),
       address: z.object({
         name: z.string(), line1: z.string(), line2: z.string().optional(), city: z.string(), region: z.string(), postal_code: z.string(),
       }).optional(),
     },
-  }, ({ name, email, household_size, payment_token, address }) => {
+  }, async ({ name, email, household_size, payment_token, address }) => {
     const created = store.createAccount({ name, email, household_size });
     const a = { accountId: created.account.id, role: 'agent' };
-    if (payment_token) store.addPaymentMethod(a, { token: payment_token });
+    if (payment_token) await store.addPaymentMethod(a, { token: payment_token });
     if (address) store.addAddress(a, address);
     if (attachKeyOnSignup) session.apiKey = created.api_key;
     return {
@@ -113,9 +113,14 @@ export function buildMcpServer(store, session, { attachKeyOnSignup = true } = {}
 
   tool('add_payment_method', {
     title: 'Add payment method',
-    description: 'Attach a card. Sandbox tokens: pm_card_visa, pm_card_mastercard, pm_card_declined, pm_card_insufficient_funds.',
+    description: 'Test mode only: attach a card from a token (pm_card_visa, pm_card_mastercard, pm_card_declined, pm_card_insufficient_funds). For real cards use create_card_setup_link.',
     input: { token: z.string(), set_default: z.boolean().default(true) },
   }, (args) => store.addPaymentMethod(auth(), args));
+
+  tool('create_card_setup_link', {
+    title: 'Create card setup link',
+    description: 'Get a secure Stripe page where the human saves their card. Send the URL to the account owner; the saved card becomes the default. Nothing is charged.',
+  }, () => store.createCardSetupLink(auth()));
 
   tool('list_payment_methods', { title: 'List payment methods', description: 'Cards on file.', readOnly: true }, () => store.listPaymentMethods(auth()));
 
