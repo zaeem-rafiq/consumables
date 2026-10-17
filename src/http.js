@@ -108,7 +108,7 @@ function llmsTxt(table, baseUrl) {
 - Sandbox: POST /v1/test/clock/advance {"days":30} simulates renewals and deliveries.
 
 ## Google Universal Commerce Protocol (UCP)
-- Profile: GET ${base}/.well-known/ucp. Checkout: ${base}/ucp/checkout-sessions (create, get, PUT update, /complete, /cancel), with the same Bearer agent key.
+- Profile: GET ${baseUrl}/.well-known/ucp. Checkout: ${baseUrl}/ucp/checkout-sessions (create, get, PUT update, /complete, /cancel), with the same Bearer agent key.
 - Pay with handler_id "account_card" and an instrument id from payment.instruments (the owner's saved card).
 - Over-limit orders come back "requires_escalation" with a continue_url: the owner must approve.
 
