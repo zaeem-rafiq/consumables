@@ -16,9 +16,9 @@ Household supplies your AI agent keeps stocked, within limits you set.
 
 You already trust an assistant with your calendar. Let it handle the toilet paper too. Consumables is a store built for AI agents: your assistant sets up deliveries sized to your household and adjusts them when you're running low. You set the limits once. It can't spend past them, it can't approve its own orders, and you never get charged for something you didn't see first.
 
-## 30-second pitch (agent builders)
+## 30-second pitch (teams building personal assistants)
 
-Add "and it keeps the house stocked" to your agent with one MCP install. Consumables gives your agent stable SKUs, exact quotes, idempotent writes, a test clock and errors that say what to do next. Spending authority is enforced on our side with an owner key, so your users can let the agent run unattended. We also speak Google's Universal Commerce Protocol and a plain REST API.
+Add "and it keeps the house stocked" to your assistant with one connection. Consumables gives your agent stable SKUs, exact quotes, idempotent writes, a test clock and errors that say what to do next. Spending authority is enforced on our side with an owner key, so your users can let the agent run unattended. We also speak Google's Universal Commerce Protocol and a plain REST API.
 
 ## 30-second pitch (short-term rental hosts and property managers)
 

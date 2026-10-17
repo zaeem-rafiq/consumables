@@ -43,7 +43,7 @@ function tag(raw) {
 }
 
 const STYLE = `
-/* Layout: poster headline, then pitch beside the trust layer (agent transcript + owner card); signage numbers; a month strip; shelf rails of price tags; a dark builders band. */
+/* Layout: poster headline, then pitch beside the trust layer (agent transcript + owner card); signage numbers; a month strip; shelf rails of price tags; a dark band for assistant makers. */
 :root {
   --paper: #f6f6f3; --surface: #ffffff; --ink: #141414; --ink-2: #3d3d3a; --muted: #6b6b66; --rule: #dcdcd6;
   --tag: #ffd60a; --tag-hover: #ffe14d; --stop: #d7261e; --go: #1f8a4c;
@@ -88,11 +88,7 @@ a { color: inherit; }
 .nav__links { display: flex; gap: var(--s6); }
 .nav__links a { color: var(--muted); text-decoration: none; font-weight: 500; }
 .nav__links a:hover { color: var(--ink); }
-.toggle { display: inline-flex; border: 2px solid var(--ink); border-radius: var(--radius); overflow: hidden; }
-.toggle button { font: 600 0.875rem/1 var(--body); padding: 0.75rem 1rem; min-height: 40px; border: 0; background: transparent; color: var(--ink); cursor: pointer; }
-.toggle button[aria-pressed="true"] { background: var(--ink); color: var(--paper); }
 @media (max-width: 1023px) { .nav__links { display: none; } }
-@media (max-width: 560px) { .nav { flex-wrap: wrap; } .nav__right { width: 100%; } .toggle { width: 100%; } .toggle button { flex: 1; } }
 
 /* hero */
 .hero { padding-block: var(--s6) var(--s14); display: grid; grid-template-columns: minmax(0, 1fr); gap: var(--s10); }
@@ -103,8 +99,6 @@ a { color: inherit; }
 .pitch__lede { font-size: 1.375rem; line-height: 1.45; color: var(--ink-2); max-width: 30ch; }
 .ctas { display: flex; flex-wrap: wrap; gap: var(--s3); }
 .hint { font: 400 0.8125rem/1.5 var(--mono); color: var(--muted); overflow-wrap: anywhere; }
-.cmd { display: flex; align-items: center; justify-content: space-between; gap: var(--s3); background: var(--band); color: var(--band-ink); border-radius: var(--radius); padding: 0.75rem 0.75rem 0.75rem 1rem; font: 400 0.875rem/1.5 var(--mono); }
-.cmd code { overflow-x: auto; white-space: nowrap; min-width: 0; }
 
 .trust { display: grid; grid-template-columns: minmax(0, 1fr); gap: var(--s4); align-items: start; min-width: 0; }
 @media (min-width: 720px) { .trust { grid-template-columns: minmax(0, 1fr) 252px; } }
@@ -188,7 +182,7 @@ a { color: inherit; }
 .tag__note { font-weight: 600; font-size: 0.8125rem; border-top: 1px solid rgba(20, 20, 20, 0.35); padding-top: var(--s2); }
 .fine { font-size: 0.9375rem; color: var(--muted); max-width: 70ch; }
 
-/* builders band */
+/* band for assistant makers */
 .band { background: var(--band); color: var(--band-muted); padding-block: var(--s14); }
 .band__row { display: grid; grid-template-columns: minmax(0, 1fr); gap: var(--s8); }
 @media (min-width: 1024px) { .band__row { grid-template-columns: 470px minmax(0, 1fr); gap: var(--s10); } }
@@ -222,16 +216,12 @@ const SCRIPT = `
 (() => {
   const $ = (s, r = document) => r.querySelector(s);
   const $$ = (s, r = document) => [...r.querySelectorAll(s)];
-  $$('.toggle button').forEach((b) => b.addEventListener('click', () => {
-    $$('.toggle button').forEach((x) => x.setAttribute('aria-pressed', String(x === b)));
-    $$('[data-audience]').forEach((p) => { p.hidden = p.dataset.audience !== b.dataset.for; });
-  }));
   $$('.tabs button').forEach((b) => b.addEventListener('click', () => {
     $$('.tabs button').forEach((x) => x.setAttribute('aria-selected', String(x === b)));
     $$('[data-panel]').forEach((p) => { p.hidden = p.dataset.panel !== b.dataset.tab; });
   }));
   $$('[data-copy]').forEach((b) => b.addEventListener('click', async () => {
-    const text = b.closest('.code__row, .cmd').querySelector('pre, code').textContent;
+    const text = b.closest('.code__row').querySelector('pre').textContent;
     try { await navigator.clipboard.writeText(text); b.textContent = 'Copied'; }
     catch { const r = document.createRange(); r.selectNodeContents(b.previousElementSibling); const s = getSelection(); s.removeAllRanges(); s.addRange(r); b.textContent = 'Selected'; }
     setTimeout(() => { b.textContent = 'Copy'; }, 1600);
@@ -262,11 +252,7 @@ export function landingBody({ base = '' } = {}) {
   <header class="nav">
     <a class="logo" href="#top"><i aria-hidden="true"></i>Consumables</a>
     <div class="nav__right">
-      <nav class="nav__links" aria-label="Sections"><a href="#limits">Limits</a><a href="#how">How it works</a><a href="#prices">Prices</a><a href="#builders">For builders</a></nav>
-      <div class="toggle" role="group" aria-label="Show the page for">
-        <button type="button" data-for="home" aria-pressed="true">I run a home</button>
-        <button type="button" data-for="build" aria-pressed="false">I build agents</button>
-      </div>
+      <nav class="nav__links" aria-label="Sections"><a href="#limits">Limits</a><a href="#how">How it works</a><a href="#prices">Prices</a><a href="#assistants">For assistants</a></nav>
     </div>
   </header>
 
@@ -274,15 +260,10 @@ export function landingBody({ base = '' } = {}) {
     <div class="hero">
       <h1 class="display">Never run out.<br>Never overspend.</h1>
       <div class="hero__row">
-        <div class="pitch" data-audience="home">
+        <div class="pitch">
           <p class="pitch__lede">Your AI agent keeps the toilet paper, detergent and trash bags coming. You set the limits. It can't overspend.</p>
-          <div class="ctas"><a class="btn btn--primary" href="#builders">Connect your agent</a><a class="btn" href="#limits">See the limits</a></div>
+          <div class="ctas"><a class="btn btn--primary" href="#how">See how it works</a><a class="btn" href="#prices">See prices</a></div>
           <p class="hint">Agents: start at ${esc(host)}/llms.txt</p>
-        </div>
-        <div class="pitch" data-audience="build" hidden>
-          <p class="pitch__lede">Give your agent a store it can't get wrong. One install, exact quotes, and spending limits the human controls.</p>
-          <div class="cmd"><code>claude mcp add --transport http consumables ${esc(base)}/mcp</code><button class="copy" type="button" data-copy>Copy</button></div>
-          <div class="ctas"><a class="btn btn--primary" href="${esc(base)}/llms.txt">Read llms.txt</a><a class="btn" href="#builders">MCP, UCP and REST</a></div>
         </div>
 
         <div class="trust" aria-label="Example: an agent's calls and the owner's approval card">
@@ -338,11 +319,11 @@ export function landingBody({ base = '' } = {}) {
   </main>
 </div>
 
-<section class="band" id="builders">
+<section class="band" id="assistants">
   <div class="wrap band__row">
     <div>
-      <h2 class="display">Built for the agent, not the browser</h2>
-      <p class="band__lede">Stable SKUs, exact quotes, safe retries and errors that say what to do next. Spending authority stays with the human, enforced on our side.</p>
+      <h2 class="display">Add Consumables to your assistant</h2>
+      <p class="band__lede">For teams building personal assistants. Your users already ask it to run errands. One connection lets it keep their house stocked, with subscriptions, held orders and spending limits your users set and we enforce.</p>
     </div>
     <div>
       <div class="tabs" role="tablist" aria-label="Ways to connect">
