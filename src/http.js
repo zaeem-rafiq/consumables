@@ -8,6 +8,7 @@ import { ApiError, badRequest } from './errors.js';
 import { buildMcpServer } from './mcp.js';
 import { PRICING } from './store.js';
 import { fulfillmentPage, messagePage } from './admin.js';
+import { landingPage } from './landing.js';
 
 const MAX_BODY = 1_000_000;
 
@@ -191,6 +192,7 @@ export function createApp(store, { baseUrl, adminKey } = {}) {
       }
       if (url.pathname === '/mcp') return await handleMcp(req, res, url);
       if (req.method === 'GET' && url.pathname === '/') {
+        if ((req.headers.accept ?? '').includes('text/html')) return send(res, 200, landingPage({ base }), 'text/html');
         return send(res, 200, {
           name: 'Consumables', description: 'Household consumables on subscription, built for AI agents.',
           mcp: `${base}/mcp`, openapi: `${base}/openapi.json`, llms_txt: `${base}/llms.txt`, quickstart: 'POST /v1/accounts {"name":"..."}',

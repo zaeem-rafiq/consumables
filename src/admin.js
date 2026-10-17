@@ -10,7 +10,9 @@ const STYLE = `
 * { box-sizing: border-box; }
 body { margin:0; padding:24px 16px; font:15px/1.5 system-ui, sans-serif; background:var(--bg); color:var(--fg); }
 main { max-width: 900px; margin: 0 auto; }
-h1 { font-size: 22px; margin: 0 0 4px; } h2 { font-size: 17px; margin: 32px 0 8px; }
+h1 { font-size: 22px; margin: 0 0 4px; } h2 { font-size: 17px; margin: 32px 0 8px; } h3 { font-size: 14px; margin: 14px 0 6px; }
+a { color: var(--accent); }
+.addr { font: inherit; white-space: pre-wrap; user-select: all; margin: 0; padding: 8px; border: 1px dashed var(--line); border-radius: 6px; }
 .muted { color: var(--muted); }
 .card { background: var(--card); border: 1px solid var(--line); border-radius: 10px; padding: 16px; margin: 12px 0; }
 .row { display: flex; flex-wrap: wrap; gap: 16px; justify-content: space-between; }
@@ -23,31 +25,53 @@ table { border-collapse: collapse; width: 100%; } td, th { text-align: left; pad
 
 const page = (title, body) => `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>${esc(title)}</title><style>${STYLE}</style></head><body><main>${body}</main></body></html>`;
 
-/** The concierge operator's page: what to buy, where to ship it, and forms to record tracking. */
+/**
+ * The concierge operator's page. Each paid order becomes one Walmart.com order
+ * shipped straight to the customer: the card lists the exact Walmart items and
+ * the delivery address to paste in, then a form to record the tracking number.
+ */
 export function fulfillmentPage({ awaiting, shipped, key }) {
   const q = `key=${encodeURIComponent(key)}`;
-  const totals = new Map();
-  for (const o of awaiting) for (const l of o.lines) totals.set(l.name, (totals.get(l.name) ?? 0) + l.quantity);
+  const addressText = (a) => [a.name, a.line1, a.line2, `${a.city}, ${a.region} ${a.postal_code}`, a.phone].filter(Boolean).join('\n');
 
-  const shoppingList = totals.size
-    ? `<div class="card"><table><tr><th>Qty</th><th>Item</th></tr>${[...totals].sort((a, b) => a[0].localeCompare(b[0])).map(([n, qty]) => `<tr><td>${qty}</td><td>${esc(n)}</td></tr>`).join('')}</table></div>`
-    : '<p class="muted">Nothing to buy right now.</p>';
+  const cart = (o) => {
+    let cost = 0;
+    const rows = o.lines.map((l) => {
+      const src = l.source;
+      if (!src) return `<tr><td>${l.quantity}</td><td>${esc(l.name)} <span class="muted">(no Walmart listing on file)</span></td><td></td></tr>`;
+      cost += src.price_cents * l.quantity;
+      return `<tr><td>${l.quantity}</td><td><a href="${esc(src.url)}" target="_blank" rel="noopener">${esc(src.item)}</a></td><td>${usd(src.price_cents * l.quantity)}</td></tr>`;
+    }).join('');
+    return { rows, cost };
+  };
 
-  const address = (a) => `${esc(a.name)}<br>${esc(a.line1)}${a.line2 ? `<br>${esc(a.line2)}` : ''}<br>${esc(a.city)}, ${esc(a.region)} ${esc(a.postal_code)}`;
-
-  const awaitingCards = awaiting.map((o) => `
+  const awaitingCards = awaiting.map((o) => {
+    const { rows, cost } = cart(o);
+    const a = o.ship_to;
+    return `
     <div class="card">
+      <div><strong>${esc(o.account.name)}</strong> <span class="muted">· ordered ${esc(o.created_at.slice(0, 10))} · paid ${usd(o.amounts.total_cents)} · ${esc(o.id)}</span></div>
       <div class="row">
-        <div><strong>${esc(o.account.name)}</strong> <span class="muted">· ordered ${esc(o.created_at.slice(0, 10))} · paid ${usd(o.amounts.total_cents)} · ${esc(o.id)}</span>
-          <ul>${o.lines.map((l) => `<li>${l.quantity} × ${esc(l.name)}</li>`).join('')}</ul></div>
-        <div class="muted">${address(o.ship_to)}</div>
+        <div style="flex:2 1 320px">
+          <h3>1. Add to your Walmart.com cart</h3>
+          <table><tr><th>Qty</th><th>Walmart item</th><th>Walmart price</th></tr>${rows}
+            <tr><td></td><td class="muted">Walmart subtotal, before tax</td><td>${usd(cost)}</td></tr></table>
+        </div>
+        <div style="flex:1 1 220px">
+          <h3>2. Walmart delivery address</h3>
+          <pre class="addr">${esc(addressText(a))}</pre>
+          ${a.phone ? '' : '<p class="muted">No phone on file. Walmart asks for one; your own number works.</p>'}
+          <p class="muted">${esc(o.account.email ?? '')}</p>
+        </div>
       </div>
+      <h3>3. Paste the tracking number once Walmart ships</h3>
       <form method="post" action="/admin/orders/${esc(o.id)}/ship?${q}">
-        <select name="carrier"><option>UPS</option><option>USPS</option><option>FedEx</option><option>Amazon</option><option>Other</option></select>
-        <input name="tracking_number" placeholder="Tracking number" required>
+        <select name="carrier"><option>Walmart</option><option>FedEx</option><option>UPS</option><option>USPS</option><option>OnTrac</option><option>Other</option></select>
+        <input name="tracking_number" placeholder="Tracking or Walmart order number" required>
         <button>Mark shipped</button>
       </form>
-    </div>`).join('');
+    </div>`;
+  }).join('');
 
   const shippedCards = shipped.map((o) => `
     <div class="card row">
@@ -57,9 +81,8 @@ export function fulfillmentPage({ awaiting, shipped, key }) {
 
   return page('Orders to fulfill', `
     <h1>Orders to fulfill</h1>
-    <p class="muted">${awaiting.length} to buy and ship · ${shipped.length} on the way</p>
-    <h2>Shopping list</h2>${shoppingList}
-    <h2>Ship these</h2>${awaitingCards || '<p class="muted">All caught up.</p>'}
+    <p class="muted">${awaiting.length} to order on Walmart.com · ${shipped.length} on the way. Place one Walmart order per card, delivered to the customer's address.</p>
+    <h2>Order these</h2>${awaitingCards || '<p class="muted">All caught up.</p>'}
     <h2>On the way</h2>${shippedCards || '<p class="muted">Nothing in transit.</p>'}`);
 }
 

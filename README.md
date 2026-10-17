@@ -25,7 +25,7 @@ Set `STRIPE_SECRET_KEY` to use real Stripe:
 ## Fulfillment
 
 - `FULFILLMENT=mock` (default): shipments go `processing → shipped → delivered` over 3 days on the account clock.
-- `FULFILLMENT=manual` (concierge): paid orders wait as `awaiting_fulfillment`. The operator opens `/admin?key=ADMIN_KEY` and sees a combined shopping list plus every order with its address. They buy the items, enter the carrier and tracking number, and later mark the order delivered. Each step emits `shipment.shipped` / `shipment.delivered` events the agent can see.
+- `FULFILLMENT=manual` (concierge): paid orders wait as `awaiting_fulfillment`. Every SKU is one Walmart.com listing (the catalog keeps its URL and cost, which agents never see). The operator opens `/admin?key=ADMIN_KEY`, and each order shows the exact Walmart items to add to the cart plus the customer's address to use as the Walmart delivery address. With Walmart+ delivery is free. The operator pastes the tracking number once Walmart ships, and later marks the order delivered. Each step emits `shipment.shipped` / `shipment.delivered` events the agent can see.
 
 ## Configuration
 
@@ -39,7 +39,11 @@ Set `STRIPE_SECRET_KEY` to use real Stripe:
 
 Live mode (an `sk_live_` key) refuses to start unless `FULFILLMENT=manual` and `ADMIN_KEY` are set, so real orders always reach a person.
 
-See [docs/STRATEGY.md](docs/STRATEGY.md) for how this becomes the default store for agentic shopping.
+See [docs/STRATEGY.md](docs/STRATEGY.md) for how this becomes the default store for agentic shopping, and [docs/PITCH.md](docs/PITCH.md) for the pitch copy.
+
+## Prices
+
+Each price is set from the Walmart cost by `priceFromCost` in `src/catalog.js`: it covers about 8% sales tax paid to Walmart and card fees, and keeps about 25% of the subscription price. Change `TARGET_MARGIN` to move every price at once.
 
 ## Run it
 
@@ -78,7 +82,7 @@ curl -s -XPOST $B/v1/payment_methods -H "$H" -d '{"token":"pm_card_visa"}'
 curl -s -XPOST $B/v1/addresses -H "$H" -d '{"name":"Zaeem","line1":"1 Main St","city":"New York","region":"NY","postal_code":"10001"}'
 curl -s -XPOST $B/v1/recommendations -H "$H" -d '{}'
 curl -s -XPOST $B/v1/subscriptions -H "$H" -H 'idempotency-key: first-sub' \
-  -d '{"items":[{"sku":"TP-2PLY-24","quantity":1},{"sku":"PT-2PLY-12","quantity":1}],"cadence_days":28}'
+  -d '{"items":[{"sku":"TP-2PLY-30","quantity":1},{"sku":"PT-2PLY-12","quantity":1}],"cadence_days":28}'
 curl -s -XPOST $B/v1/test/clock/advance -H "$H" -d '{"days":30}'
 ```
 
@@ -91,10 +95,11 @@ The full endpoint list is in `GET /llms.txt`.
 ## Layout
 
 ```
-src/catalog.js   seed catalog (23 SKUs, 6 categories) + usage models
+src/catalog.js   catalog (22 SKUs, 6 categories), Walmart source per SKU, pricing rule, usage models
 src/store.js     all business logic: pricing, policy, subscriptions, billing, fulfillment, events, idempotency
 src/payments.js  MockPayments and StripePayments (REST, no SDK)
 src/admin.js     operator fulfillment page and card-setup result pages
+src/landing.js   the home page people see at /
 src/http.js      JSON API, /mcp (Streamable HTTP, stateless), /openapi.json, /llms.txt
 src/mcp.js       MCP tool definitions over the store
 bin/             server.js (HTTP) and mcp-stdio.js
@@ -103,6 +108,7 @@ test/            node:test suites
 
 ## Rules the engine follows
 
+- `GET /` returns the landing page to browsers (`Accept: text/html`) and a JSON index to agents.
 - Money is integer cents in USD. Subscriptions get 5% off. Shipping is free at $35+ after the discount, $5.99 below that. Tax is a flat mock 8%.
 - A renewal places the order on `next_order_date`, then sets the next date to today + `cadence_days`.
 - A failed payment puts the subscription in `past_due`. Updating its `payment_method_id` retries the failed order right away.

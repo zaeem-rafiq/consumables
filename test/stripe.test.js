@@ -70,7 +70,7 @@ test('test tokens attach to a Stripe customer and orders charge off-session', as
   const { store, agent, stripe } = await stripeStore();
   const pm = await store.addPaymentMethod(agent, { token: 'pm_card_visa' });
   assert.equal(pm.last4, '4242');
-  const sub = await store.createSubscription(agent, { items: [{ sku: 'TP-2PLY-24', quantity: 1 }] });
+  const sub = await store.createSubscription(agent, { items: [{ sku: 'TP-2PLY-30', quantity: 1 }] });
   assert.equal(sub.latest_order.status, 'paid');
 
   const pi = stripe.calls.find((c) => c.path === '/v1/payment_intents');
@@ -87,7 +87,7 @@ test('test tokens attach to a Stripe customer and orders charge off-session', as
 test('Stripe declines put the subscription past_due', async () => {
   const { store, agent } = await stripeStore();
   await store.addPaymentMethod(agent, { token: 'pm_card_chargeDeclined' });
-  const sub = await store.createSubscription(agent, { items: [{ sku: 'TP-2PLY-24' }] });
+  const sub = await store.createSubscription(agent, { items: [{ sku: 'TP-2PLY-30' }] });
   assert.equal(sub.status, 'past_due');
   assert.equal(sub.latest_order.charges[0].failure_code, 'generic_decline');
   await assert.rejects(() => store.addPaymentMethod(agent, { token: 'pm_nope' }), (e) => e.code === 'invalid_payment_token');

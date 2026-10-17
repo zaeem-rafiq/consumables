@@ -5,7 +5,7 @@ import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { z } from 'zod';
 import { ApiError } from './errors.js';
 
-const item = z.object({ sku: z.string().describe('Product SKU, e.g. TP-2PLY-24'), quantity: z.number().int().min(1).max(50).default(1) });
+const item = z.object({ sku: z.string().describe('Product SKU, e.g. TP-2PLY-30'), quantity: z.number().int().min(1).max(50).default(1) });
 const items = z.array(item).min(1).describe('Line items: [{ sku, quantity }]');
 const subId = z.string().describe('Subscription id (sub_...)');
 const date = z.string().regex(/^\d{4}-\d{2}-\d{2}$/).describe('Date as YYYY-MM-DD, in the account clock');
@@ -85,7 +85,7 @@ export function buildMcpServer(store, session, { attachKeyOnSignup = true } = {}
       household_size: z.number().int().min(1).max(20).default(2),
       payment_token: z.string().optional().describe('Test mode card token, e.g. pm_card_visa'),
       address: z.object({
-        name: z.string(), line1: z.string(), line2: z.string().optional(), city: z.string(), region: z.string(), postal_code: z.string(),
+        name: z.string(), line1: z.string(), line2: z.string().optional(), city: z.string(), region: z.string(), postal_code: z.string(), phone: z.string().optional(),
       }).optional(),
     },
   }, async ({ name, email, household_size, payment_token, address }) => {
@@ -129,7 +129,7 @@ export function buildMcpServer(store, session, { attachKeyOnSignup = true } = {}
     description: 'Add a US shipping address.',
     input: {
       name: z.string(), line1: z.string(), line2: z.string().optional(), city: z.string(), region: z.string().describe('State, e.g. NY'),
-      postal_code: z.string(), set_default: z.boolean().default(true),
+      postal_code: z.string(), phone: z.string().optional().describe('Recipient phone for the delivery carrier (recommended)'), set_default: z.boolean().default(true),
     },
   }, (args) => store.addAddress(auth(), args));
 

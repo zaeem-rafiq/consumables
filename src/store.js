@@ -24,8 +24,8 @@ export const DEFAULT_POLICY = {
 
 // A reasonable starter bundle: one product per everyday need.
 const STARTER_SKUS = [
-  'TP-2PLY-24', 'PT-2PLY-12', 'DISH-LIQ-3', 'DW-PODS-60', 'TRASH-13G-90',
-  'LAUN-LIQ-100', 'HSOAP-REFILL-2', 'WIPES-225', 'SPONGE-12', 'TPASTE-4',
+  'TP-2PLY-30', 'PT-2PLY-12', 'DISH-LIQ-90', 'DW-PODS-115', 'TRASH-13G-90',
+  'LAUN-LIQ-115', 'HSOAP-REFILL-56', 'WIPES-225', 'SPONGE-8', 'TPASTE-6',
 ];
 
 const MAX_ADVANCE_DAYS = 400;
@@ -260,14 +260,14 @@ export class Store {
     return x;
   }
 
-  addAddress(auth, { name, line1, line2, city, region, postal_code, country = 'US', set_default = true } = {}) {
+  addAddress(auth, { name, line1, line2, city, region, postal_code, phone, country = 'US', set_default = true } = {}) {
     for (const [k, v] of Object.entries({ name, line1, city, region, postal_code })) {
       if (!v || typeof v !== 'string') throw badRequest('missing_param', `${k} is required.`, { param: k });
     }
     if (country !== 'US') throw badRequest('unsupported_country', 'Only US addresses are supported right now.', { param: 'country' });
     const a = this.#account(auth.accountId);
     const addrId = id('addr');
-    const body = { name, line1, line2: line2 ?? null, city, region, postal_code, country };
+    const body = { name, line1, line2: line2 ?? null, city, region, postal_code, phone: phone ?? null, country };
     this.db.prepare('INSERT INTO addresses (id, account_id, json, created_at) VALUES (?, ?, ?, ?)').run(addrId, a.id, j(body), a.clock);
     if (set_default || !a.default_address_id) this.db.prepare('UPDATE accounts SET default_address_id = ? WHERE id = ?').run(addrId, a.id);
     return { id: addrId, ...body };
@@ -287,7 +287,7 @@ export class Store {
 
   #normalizeItems(items, param = 'items') {
     if (!Array.isArray(items) || items.length === 0) {
-      throw badRequest('missing_param', `${param} must be a non-empty list of { sku, quantity }.`, { param, hint: 'Example: [{"sku":"TP-2PLY-24","quantity":1}]' });
+      throw badRequest('missing_param', `${param} must be a non-empty list of { sku, quantity }.`, { param, hint: 'Example: [{"sku":"TP-2PLY-30","quantity":1}]' });
     }
     const merged = new Map();
     for (const [i, it] of items.entries()) {
@@ -790,11 +790,16 @@ export class Store {
   listFulfillmentQueue({ status = 'awaiting_fulfillment' } = {}) {
     return this.db.prepare(`SELECT o.*, s.status AS shipment_status, a.name AS account_name, a.email AS account_email
       FROM shipments s JOIN orders o ON o.id = s.order_id JOIN accounts a ON a.id = o.account_id
-      WHERE s.status = ? ORDER BY o.created_at, o.rowid`).all(status).map((o) => ({
-      ...this.#presentOrder(o),
-      account: { id: o.account_id, name: o.account_name, email: o.account_email },
-      ship_to: p(this.db.prepare('SELECT json FROM addresses WHERE id = ?').get(o.address_id).json),
-    }));
+      WHERE s.status = ? ORDER BY o.created_at, o.rowid`).all(status).map((o) => {
+      const order = this.#presentOrder(o);
+      return {
+        ...order,
+        // Operator-only: the retail listing to buy for each line (never shown to agents).
+        lines: order.lines.map((l) => ({ ...l, source: this.products.get(l.sku)?.source ?? null })),
+        account: { id: o.account_id, name: o.account_name, email: o.account_email },
+        ship_to: p(this.db.prepare('SELECT json FROM addresses WHERE id = ?').get(o.address_id).json),
+      };
+    });
   }
 
   #operatorShipment(orderId, from) {

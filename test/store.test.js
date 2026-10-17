@@ -3,34 +3,34 @@ import assert from 'node:assert/strict';
 import { setup } from './helpers.js';
 import { ApiError } from '../src/errors.js';
 
-const TP = { sku: 'TP-2PLY-24', quantity: 1 };
+const TP = { sku: 'TP-2PLY-30', quantity: 1 };
 const PT = { sku: 'PT-2PLY-12', quantity: 1 };
 
 test('catalog search and unknown sku hint', async () => {
   const { store } = await setup();
   const tp = await store.listProducts({ q: 'toilet' });
-  assert.ok(tp.length >= 2);
+  assert.ok(tp.length >= 1);
   assert.ok(tp.every((p) => p.category === 'paper'));
   assert.equal((await store.listProducts({ category: 'laundry' })).length, 3);
-  assert.throws(() => store.getProduct('TP-NOPE'), (e) => e.code === 'product_not_found' && /TP-2PLY-24/.test(e.hint));
+  assert.throws(() => store.getProduct('TP-NOPE'), (e) => e.code === 'product_not_found' && /TP-2PLY-30/.test(e.hint));
   assert.throws(() => store.listProducts({ category: 'garden' }), (e) => e.code === 'unknown_category');
 });
 
 test('pricing: subscription discount, free shipping threshold, tax', async () => {
   const { store } = await setup();
-  const small = await store.price([{ sku: 'NAP-250', quantity: 1 }], { subscription: false });
-  assert.deepEqual(small.amounts, { subtotal_cents: 699, discount_cents: 0, shipping_cents: 599, tax_cents: 56, total_cents: 1354, currency: 'usd' });
+  const small = await store.price([{ sku: 'NAP-500', quantity: 1 }], { subscription: false });
+  assert.deepEqual(small.amounts, { subtotal_cents: 599, discount_cents: 0, shipping_cents: 599, tax_cents: 48, total_cents: 1246, currency: 'usd' });
   const big = await store.price([TP, PT], { subscription: true });
-  assert.equal(big.amounts.subtotal_cents, 5298);
-  assert.equal(big.amounts.discount_cents, 265);
+  assert.equal(big.amounts.subtotal_cents, 4898);
+  assert.equal(big.amounts.discount_cents, 245);
   assert.equal(big.amounts.shipping_cents, 0);
-  assert.equal(big.amounts.total_cents, 5298 - 265 + 403);
+  assert.equal(big.amounts.total_cents, 4898 - 245 + 372);
 });
 
 test('recommendations scale with household size', async () => {
   const { store, agent } = await setup();
-  const two = await store.recommend(agent, { skus: ['TP-2PLY-24'], cadence_days: 28 });
-  const six = await store.recommend(agent, { household_size: 6, skus: ['TP-2PLY-24'], cadence_days: 28 });
+  const two = await store.recommend(agent, { skus: ['TP-2PLY-30'], cadence_days: 28 });
+  const six = await store.recommend(agent, { household_size: 10, skus: ['TP-2PLY-30'], cadence_days: 28 });
   assert.equal(two.items[0].quantity, 1);
   assert.ok(six.items[0].quantity > two.items[0].quantity);
   assert.ok((await store.recommend(agent, {})).items.length >= 8);
@@ -59,8 +59,8 @@ test('modify, skip, pause with auto-resume, ship now, cancel', async () => {
   let sub = await store.createSubscription(agent, { items: [TP], cadence_days: 28, start_date: '2026-01-10' });
   assert.equal(sub.latest_order, null);
 
-  sub = await store.updateSubscription(agent, sub.id, { items: [{ sku: 'TP-BAMBOO-24', quantity: 2 }], cadence_days: 42 });
-  assert.equal(sub.items[0].sku, 'TP-BAMBOO-24');
+  sub = await store.updateSubscription(agent, sub.id, { items: [{ sku: 'TIS-3PLY-6', quantity: 2 }], cadence_days: 42 });
+  assert.equal(sub.items[0].sku, 'TIS-3PLY-6');
   assert.equal(sub.cadence_days, 42);
 
   sub = await store.skipNext(agent, sub.id);
@@ -156,7 +156,7 @@ test('validation errors are structured with hints', async () => {
   const cases = [
     () => store.createSubscription(agent, { items: [] }),
     () => store.createSubscription(agent, { items: [TP], cadence_days: 3 }),
-    () => store.createSubscription(agent, { items: [{ sku: 'TP-2PLY-24', quantity: 0 }] }),
+    () => store.createSubscription(agent, { items: [{ sku: 'TP-2PLY-30', quantity: 0 }] }),
     () => store.addPaymentMethod(agent, { token: 'tok_real_card' }),
     () => store.authenticate('ck_test_wrong'),
   ];

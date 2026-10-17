@@ -15,7 +15,7 @@ async function conciergeStore(opts = {}) {
 
 test('paid orders wait for the operator instead of shipping themselves', async () => {
   const { store, agent } = await conciergeStore();
-  const sub = await store.createSubscription(agent, { items: [{ sku: 'TP-2PLY-24', quantity: 2 }] });
+  const sub = await store.createSubscription(agent, { items: [{ sku: 'TP-2PLY-30', quantity: 2 }] });
   const order = sub.latest_order;
   assert.equal(order.shipment.status, 'awaiting_fulfillment');
   assert.equal(order.shipment.tracking_number, null);
@@ -27,6 +27,8 @@ test('paid orders wait for the operator instead of shipping themselves', async (
   assert.equal(queued.id, order.id);
   assert.equal(queued.ship_to.postal_code, ADDRESS.postal_code);
   assert.equal(queued.lines[0].quantity, 2);
+  assert.match(queued.lines[0].source.url, /^https:\/\/www\.walmart\.com\/ip\//);
+  assert.equal(store.getOrder(agent, order.id).lines[0].source, undefined, 'agents never see where we buy');
 
   assert.throws(() => store.markShipped(order.id, { carrier: 'UPS' }), (e) => e.code === 'missing_param');
   assert.throws(() => store.markDelivered(order.id), (e) => e.code === 'invalid_shipment_state');
@@ -49,7 +51,8 @@ test('operator page: key required, lists orders, ships and delivers via forms', 
     assert.equal((await fetch(`${base}/admin`)).status, 401);
     assert.equal((await fetch(`${base}/admin?key=wrong`)).status, 401);
     const html = await (await fetch(`${base}/admin?key=secret`)).text();
-    assert.match(html, /Paper Towels/);
+    assert.match(html, /walmart\.com\/ip\/15106305176/);
+    assert.match(html, /Great Value Everyday Strong Paper Towels/);
     assert.match(html, /Concierge home/);
     assert.match(html, /10001/);
 
@@ -82,7 +85,7 @@ test('live mode runs on the real clock and renews once even if runs overlap', as
   assert.equal(store.getAccount(agent.accountId).today, today);
   await assert.rejects(() => store.advanceClock(agent, { days: 1 }), (e) => e.status === 403);
 
-  const sub = await store.createSubscription(agent, { items: [{ sku: 'TP-2PLY-24' }], start_date: undefined });
+  const sub = await store.createSubscription(agent, { items: [{ sku: 'TP-2PLY-30' }], start_date: undefined });
   assert.equal(store.listOrders(agent, { subscription_id: sub.id }).length, 1);
   store.db.prepare('UPDATE subscriptions SET next_order_date = ? WHERE id = ?').run(today, sub.id);
   await Promise.all([store.runAllDue(), store.runAllDue()]);

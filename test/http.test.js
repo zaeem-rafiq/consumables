@@ -24,6 +24,11 @@ const call = async (method, path, { key, body, headers = {} } = {}) => {
 test('discovery: index, llms.txt, openapi', async () => {
   const idx = await call('GET', '/');
   assert.equal(idx.body.mcp, `${base}/mcp`);
+  const home = await call('GET', '/', { headers: { accept: 'text/html' } });
+  assert.match(home.body, /can't overspend/);
+  const product = await call('GET', '/v1/products/TP-2PLY-30');
+  assert.equal(product.body.source, undefined);
+  assert.equal(product.body.brand, 'Great Value');
   const llms = await call('GET', '/llms.txt');
   assert.match(llms.body, /POST \/v1\/subscriptions/);
   const spec = await call('GET', '/openapi.json');
@@ -39,7 +44,7 @@ test('end-to-end agent flow over HTTP', async () => {
   assert.equal((await call('POST', '/v1/payment_methods', { key, body: { token: 'pm_card_visa' } })).status, 201);
   assert.equal((await call('POST', '/v1/addresses', { key, body: ADDRESS })).status, 201);
 
-  const rec = await call('POST', '/v1/recommendations', { key, body: { skus: ['TP-2PLY-24', 'PT-2PLY-12', 'DW-PODS-60'] } });
+  const rec = await call('POST', '/v1/recommendations', { key, body: { skus: ['TP-2PLY-30', 'PT-2PLY-12', 'DW-PODS-115'] } });
   assert.equal(rec.body.household_size, 3);
 
   const items = rec.body.items.map(({ sku, quantity }) => ({ sku, quantity }));
@@ -72,7 +77,7 @@ test('owner key gates policy and approvals', async () => {
   const { api_key: key, owner_key: owner } = acct.body;
   await call('POST', '/v1/payment_methods', { key, body: { token: 'pm_card_visa' } });
   await call('POST', '/v1/addresses', { key, body: ADDRESS });
-  const order = await call('POST', '/v1/orders', { key, body: { items: [{ sku: 'TP-2PLY-24' }] } });
+  const order = await call('POST', '/v1/orders', { key, body: { items: [{ sku: 'TP-2PLY-30' }] } });
   assert.equal(order.body.status, 'requires_approval');
 
   const pending = await call('GET', '/v1/approvals', { key });
