@@ -34,16 +34,23 @@ Anyone can list paper towels. What's hard to copy is being the store a household
 ## Wedges, in order
 
 1. **Developers building household and personal assistants.** Give them the cheapest way to add "and it restocks your home" to their agent: an MCP install plus a revenue share per subscription they create. This is the Supabase playbook, where builders choose the default for end users.
-2. **Short-term rentals, property managers and small offices.** Many locations with predictable usage, and an operator who already wants this automated. Bigger baskets, lower churn, and owner approval maps neatly onto how they already work. Needs multi-location accounts.
+2. **Short-term rentals, property managers and small offices.** Many locations with predictable usage, and an operator who already wants this automated. Bigger baskets, lower churn, and owner approval maps neatly onto how they already work. Bigger orders also fix the shipping math that sinks small household orders. Today restocking here is manual or bundled into management fees (Awning's starts around 15% of revenue). Needs multi-location accounts.
 3. **Consumers through the big assistants.** Gemini checkout via UCP, ChatGPT discovery via an ACP product feed (ChatGPT no longer completes purchases in-chat), and Claude via our MCP connector. Claude has no shopping marketplace, so an MCP connector is the open way in, and that's exactly what we ship. This channel is the highest volume but the most competitive, so it's better entered with proof from wedges 1 and 2.
 
-## Economics (to validate)
+## Economics
 
-Consumables are a low-margin, high-frequency business. What makes it work:
+Consumables are a low-margin, high-frequency business. A first margin check (October 2026, `business/margin-check.md` in the project files) gave us real numbers:
 
-- **Private label** ("Basics" in the catalog) for margin on the highest-volume SKUs.
-- **Subscription predictability** lets us buy and stock ahead with a 3PL. Early on, dropship through a wholesale distributor to avoid holding inventory.
-- **Basket building**: free shipping at a threshold, and cadence alignment so one box ships per cycle.
+- **Most items make 40–60% before shipping. Shipping decides everything.** Every box we send costs $8–12 before it holds anything.
+- **Bulky paper loses money when we ship it ourselves from one location.** Carriers bill a 12-roll paper towel box as about 27 lb, so the label costs about $42 for a $26.59 item. A paper-staples basket loses about $40 per order. Prices can't fix this.
+- **Kitchen, laundry and bath items work.** They keep about 15% at today's prices and about 26% with a 15% price rise.
+
+What makes it work:
+
+- **Concierge phase: retailers deliver, we don't ship boxes.** Each order is placed on Walmart.com (with a Walmart+ membership) and delivered straight to the customer, free, from a warehouse near them. That turns the paper basket from about −$40 into about +$39 (43%), and lifts the kitchen and laundry basket to about 30%. It requires our catalog's pack sizes to match Walmart's, since packs can't be split. The risk is that Walmart reserves the right to refuse sales to resellers. Amazon is the backup, and options are in `business/paper-goods-delivery.md`. This gets us to launch. It isn't the long-term model.
+- **Next: a wholesale or janitorial distributor that ships for us** (Essendant and similar), once volume qualifies. Case packs from regional warehouses suit rental operators especially.
+- **Then: private label** ("Basics" in the catalog) for margin on the highest-volume SKUs, with our own stock at a 3PL once subscriptions make demand predictable.
+- **Basket building**: free shipping at a threshold, every-other-month cadences so each delivery is fuller, and cadence alignment so one delivery covers a cycle.
 - **A partner revenue share** that's cheaper than paid acquisition.
 
 ## Key metrics
@@ -52,19 +59,21 @@ Consumables are a low-margin, high-frequency business. What makes it work:
 - Share of orders with zero human touch, and the approval rate when a human is asked.
 - Agent-initiated GMV, number of distinct agent platforms, and subscriptions per partner.
 - Stockout incidents reported via `running_low` (lower is better), and churn.
+- Money left per order after goods, delivery and card fees. Target: about 25% of what the customer pays.
 
 ## Roadmap
 
-**Now (this MVP):** catalog, subscriptions with full lifecycle control, spend policy and approvals, mocked payments and fulfillment, HTTP API, MCP (stdio and remote), a test clock, and 19 passing tests.
+**Now (this MVP):** catalog, subscriptions with full lifecycle control, spend policy and approvals, Stripe payments (card setup link and off-session charges; mocked by default), concierge fulfillment with an operator page, HTTP API, MCP (stdio and remote), a test clock, and 29 passing tests.
 
 **Next:**
+- Catalog pack sizes and prices matched to retailer direct delivery, with bulky paper repriced or flagged
 - Hosted deploy with a public URL and a listing in MCP registries
 - Postgres
-- Stripe (test, then live), with the owner claiming the account and adding a card
+- Stripe live mode, with the owner claiming the account and adding a card
 - An approval link sent to the owner by email or SMS
 - Outbound webhooks
 - OAuth for the remote MCP endpoint so a human can connect from claude.ai or ChatGPT
-- A real fulfillment partner
+- A wholesale fulfillment partner
 
 **Later:**
 - UCP checkout (Gemini), an ACP product feed (ChatGPT discovery), and AP2 or Shared Payment Token mandates
@@ -79,5 +88,7 @@ Consumables are a low-margin, high-frequency business. What makes it work:
 - **Agent checkout layers** (Rye, Zinc and similar) let a developer buy from existing retailers instead of from us. They offer no subscriptions, spend policy or usage model, and buying through someone else's site carries the legal risk the Perplexity ruling showed.
 - **Walmart and Instacart** are the most likely giants to open an official agent API for household goods: Instacart already has an MCP server, and Walmart co-developed UCP. Watch both.
 - **Margins.** We have to get to private label and dense delivery quickly. Grove Collaborative, the best-known household subscription brand, saw revenue fall 17% year over year in Q2 2026 and received an NYSE notice. Shipping costs and churn are the reason.
+- **Depending on Walmart for delivery.** While retailers deliver for us, Walmart can refuse reseller orders or close the account. Keep Amazon ready as a backup, and move to a distributor as soon as volume allows.
+- **Price transparency.** Our paper prices are about 2x Walmart's (toilet paper $24.99 against about $12). Agents compare prices, and with retailer delivery the customer may see the retailer's price on the packing slip. What we sell is the restocking, limits and approvals, so we should test pricing near retail plus a small monthly service fee against today's item markups.
 - **Fraud and abuse** from autonomous signups. Sandbox stays free, but live mode always requires a verified human owner.
 - **Protocol churn.** ChatGPT's checkout lasted six months. Keep the core protocol-agnostic and treat UCP, ACP, AP2 and MCP as adapters.
