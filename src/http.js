@@ -198,6 +198,7 @@ export function createApp(store, { baseUrl, adminKey } = {}) {
       }
       if (url.pathname === '/mcp') return await handleMcp(req, res, url);
       if (req.method === 'GET' && url.pathname === '/') {
+        if ((req.headers.accept ?? '').includes('text/markdown')) return send(res, 200, llmsTxt(table, base), 'text/markdown');
         if ((req.headers.accept ?? '').includes('text/html')) return send(res, 200, landingPage({ base }), 'text/html');
         return send(res, 200, {
           name: 'Consumables', description: 'Household consumables on subscription, built for AI agents.',

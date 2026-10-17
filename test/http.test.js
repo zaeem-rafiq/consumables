@@ -26,6 +26,8 @@ test('discovery: index, llms.txt, openapi', async () => {
   assert.equal(idx.body.mcp, `${base}/mcp`);
   const home = await call('GET', '/', { headers: { accept: 'text/html' } });
   assert.match(home.body, /can't overspend/);
+  const md = await call('GET', '/', { headers: { accept: 'text/markdown' } });
+  assert.match(md.body, /UCP/);
   const product = await call('GET', '/v1/products/TP-2PLY-30');
   assert.equal(product.body.source, undefined);
   assert.equal(product.body.brand, 'Great Value');
