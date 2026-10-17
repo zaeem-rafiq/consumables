@@ -7,8 +7,9 @@ import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/
 import { ApiError, badRequest } from './errors.js';
 import { buildMcpServer } from './mcp.js';
 import { PRICING } from './store.js';
-import { fulfillmentPage, messagePage } from './admin.js';
+import { fulfillmentPage, messagePage, termsPage, privacyPage } from './admin.js';
 import { landingPage } from './landing.js';
+import { Ucp, ucpProfile } from './ucp.js';
 
 const MAX_BODY = 1_000_000;
 
@@ -106,6 +107,11 @@ function llmsTxt(table, baseUrl) {
 - Errors are { "error": { "code", "message", "hint" } }. Follow the hint.
 - Sandbox: POST /v1/test/clock/advance {"days":30} simulates renewals and deliveries.
 
+## Google Universal Commerce Protocol (UCP)
+- Profile: GET ${base}/.well-known/ucp. Checkout: ${base}/ucp/checkout-sessions (create, get, PUT update, /complete, /cancel), with the same Bearer agent key.
+- Pay with handler_id "account_card" and an instrument id from payment.instruments (the owner's saved card).
+- Over-limit orders come back "requires_escalation" with a continue_url: the owner must approve.
+
 ## Endpoints
 ${table.map((r) => `- ${r.method} ${r.path}: ${r.summary}${r.auth === 'owner' ? ' [owner_key]' : ''}`).join('\n')}
 `;
@@ -185,8 +191,8 @@ export function createApp(store, { baseUrl, adminKey } = {}) {
       if (req.method === 'OPTIONS') {
         res.writeHead(204, {
           'access-control-allow-origin': '*',
-          'access-control-allow-headers': 'authorization, content-type, idempotency-key, mcp-session-id, mcp-protocol-version',
-          'access-control-allow-methods': 'GET, POST, PATCH, OPTIONS',
+          'access-control-allow-headers': 'authorization, content-type, idempotency-key, mcp-session-id, mcp-protocol-version, ucp-agent, request-id, x-api-key',
+          'access-control-allow-methods': 'GET, POST, PUT, PATCH, OPTIONS',
         });
         return res.end();
       }
@@ -199,6 +205,13 @@ export function createApp(store, { baseUrl, adminKey } = {}) {
         });
       }
       if (req.method === 'GET' && url.pathname === '/health') return send(res, 200, { ok: true });
+      if (req.method === 'GET' && url.pathname === '/.well-known/ucp') return send(res, 200, ucpProfile(base));
+      if (url.pathname.startsWith('/ucp/') && await new Ucp(store, { base }).handle(req, res, url, { readBody, send, bearer })) return;
+      if (req.method === 'GET' && /^\/approvals\/[^/]+$/.test(url.pathname)) {
+        return send(res, 200, messagePage('Waiting for the account owner', 'This order is outside the spending limits the account owner set, so it is waiting for them. Nothing has been charged. The owner approves or declines it with their owner key.'), 'text/html');
+      }
+      if (req.method === 'GET' && url.pathname === '/terms') return send(res, 200, termsPage(), 'text/html');
+      if (req.method === 'GET' && url.pathname === '/privacy') return send(res, 200, privacyPage(), 'text/html');
       if (url.pathname === '/admin' || url.pathname.startsWith('/admin/')) return await handleAdmin(store, req, res, url, adminKey);
       if (req.method === 'GET' && url.pathname === '/setup/complete') {
         try {

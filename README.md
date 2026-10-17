@@ -27,6 +27,16 @@ Set `STRIPE_SECRET_KEY` to use real Stripe:
 - `FULFILLMENT=mock` (default): shipments go `processing → shipped → delivered` over 3 days on the account clock.
 - `FULFILLMENT=manual` (concierge): paid orders wait as `awaiting_fulfillment`. Every SKU is one Walmart.com listing (the catalog keeps its URL and cost, which agents never see). The operator opens `/admin?key=ADMIN_KEY`, and each order shows the exact Walmart items to add to the cart plus the customer's address to use as the Walmart delivery address. With Walmart+ delivery is free. The operator pastes the tracking number once Walmart ships, and later marks the order delivered. Each step emits `shipment.shipped` / `shipment.delivered` events the agent can see.
 
+## Google UCP
+
+The store also speaks Google's [Universal Commerce Protocol](https://ucp.dev) (version 2026-08-25), the checkout standard behind Gemini and AI Mode shopping:
+
+- `GET /.well-known/ucp` is the public business profile.
+- `/ucp/checkout-sessions` implements the checkout capability over REST (create, get, update, complete, cancel) plus the fulfillment extension.
+- Checkouts belong to an account (Bearer agent key) and pay with the card the owner saved (`account_card` handler), so the owner's limits apply: an over-limit order returns `requires_escalation` and waits for the owner. Canceling the checkout withdraws it.
+
+Not done yet: Stripe's shared payment token handler (needs a Stripe network profile ID), guest checkout without an account, response signing, the order webhook capability, and Google Merchant Center onboarding (a product feed plus Google's waitlist).
+
 ## Configuration
 
 | Variable | Purpose |
@@ -51,7 +61,7 @@ Requires Node 22.5+. It uses the built-in `node:sqlite`, so there are no native 
 
 ```bash
 npm install
-npm test          # 29 tests: store, HTTP API, MCP, Stripe (faked API), concierge fulfillment
+npm test          # 35 tests: store, HTTP API, MCP, UCP, Stripe (faked API), concierge fulfillment
 npm start         # HTTP API + remote MCP on http://localhost:8787 (see Configuration below)
 npm run mcp       # local MCP server over stdio
 ```
@@ -100,6 +110,7 @@ src/store.js     all business logic: pricing, policy, subscriptions, billing, fu
 src/payments.js  MockPayments and StripePayments (REST, no SDK)
 src/admin.js     operator fulfillment page and card-setup result pages
 src/landing.js   the home page people see at /
+src/ucp.js       Google UCP profile and checkout sessions
 src/http.js      JSON API, /mcp (Streamable HTTP, stateless), /openapi.json, /llms.txt
 src/mcp.js       MCP tool definitions over the store
 bin/             server.js (HTTP) and mcp-stdio.js

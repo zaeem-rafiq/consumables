@@ -533,6 +533,18 @@ export class Store {
     return this.getOrder(auth, a.order_id);
   }
 
+  /** The agent can take back an order it asked the owner to approve. It can never approve one. */
+  withdrawOrder(auth, orderId, reason = 'withdrawn_by_agent') {
+    const account = this.#account(auth.accountId);
+    const o = this.db.prepare('SELECT * FROM orders WHERE id = ? AND account_id = ?').get(orderId, account.id);
+    if (!o) throw notFound('order', orderId);
+    if (o.status !== 'requires_approval') throw conflict('order_not_withdrawable', `Order is ${o.status}; only orders waiting for approval can be withdrawn.`);
+    this.db.prepare("UPDATE approvals SET status = 'withdrawn', decided_at = ? WHERE id = ? AND status = 'pending'").run(account.clock, o.approval_id);
+    this.db.prepare("UPDATE orders SET status = 'canceled', updated_at = ? WHERE id = ?").run(account.clock, o.id);
+    this.#emit(account.id, 'order.canceled', { order_id: o.id, reason });
+    return this.getOrder(auth, o.id);
+  }
+
   // ------------------------------------------------------- subscriptions
 
   #validateCadence(cadence) {

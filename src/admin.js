@@ -89,3 +89,24 @@ export function fulfillmentPage({ awaiting, shipped, key }) {
 export function messagePage(title, message) {
   return page(title, `<h1>${esc(title)}</h1><p>${esc(message)}</p>`);
 }
+
+// Draft policy pages, linked from UCP checkouts. Replace with reviewed text before launch.
+export function termsPage() {
+  return page('Terms of service', `<h1>Terms of service</h1><p class="muted">Draft. Consumables is in private testing; final terms will be published before launch.</p>
+    <ul>
+      <li>We buy household supplies from major retailers and arrange delivery to your address. The box may show the retailer's name.</li>
+      <li>You see the full price, shipping and tax before anything is charged, and that is the amount charged.</li>
+      <li>The account owner sets spending limits. Orders outside them wait for the owner's approval and are not charged until approved.</li>
+      <li>You can pause, skip or cancel a subscription at any time before its next order date.</li>
+    </ul>`);
+}
+
+export function privacyPage() {
+  return page('Privacy', `<h1>Privacy</h1><p class="muted">Draft. Final policy will be published before launch.</p>
+    <ul>
+      <li>We keep your name, email, phone and delivery address to place and deliver your orders.</li>
+      <li>We share your delivery address and phone with the retailer that delivers the order.</li>
+      <li>Card details are held by our payment processor, Stripe. We never see or store full card numbers.</li>
+      <li>We don't sell your information.</li>
+    </ul>`);
+}

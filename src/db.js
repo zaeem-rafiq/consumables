@@ -91,6 +91,13 @@ CREATE TABLE IF NOT EXISTS events (
   data_json TEXT NOT NULL,
   created_at TEXT NOT NULL
 );
+CREATE TABLE IF NOT EXISTS ucp_checkouts (
+  id TEXT PRIMARY KEY,
+  account_id TEXT NOT NULL REFERENCES accounts(id),
+  json TEXT NOT NULL,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
 CREATE TABLE IF NOT EXISTS idempotency (
   account_id TEXT NOT NULL,
   key TEXT NOT NULL,
