@@ -44,7 +44,7 @@ function routes(store) {
     ['PATCH', '/v1/subscriptions/:id', 'Update items, cadence_days, next_order_date, address_id, payment_method_id, metadata', 'agent', ({ auth, params, body }) => store.updateSubscription(auth, params.id, body)],
     ['POST', '/v1/subscriptions/:id/pause', 'Pause { until? }', 'agent', ({ auth, params, body }) => store.pauseSubscription(auth, params.id, body)],
     ['POST', '/v1/subscriptions/:id/resume', 'Resume', 'agent', ({ auth, params }) => store.resumeSubscription(auth, params.id)],
-    ['POST', '/v1/subscriptions/:id/skip', 'Skip the next delivery', 'agent', ({ auth, params }) => store.skipNext(auth, params.id)],
+    ['POST', '/v1/subscriptions/:id/skip', 'Skip the next delivery, or with {"skus":[...]} leave only those items out of it', 'agent', ({ auth, params, body }) => store.skipNext(auth, params.id, { skus: body?.skus })],
     ['POST', '/v1/subscriptions/:id/ship_now', 'Order now and restart the cadence', 'agent', ({ auth, params }) => store.shipNow(auth, params.id)],
     ['POST', '/v1/subscriptions/:id/supply_signal', "Report { signal: 'running_low' | 'overstocked' } to tune cadence", 'agent', ({ auth, params, body }) => store.reportSignal(auth, params.id, body)],
     ['POST', '/v1/subscriptions/:id/cancel', 'Cancel { reason? }', 'agent', ({ auth, params, body }) => store.cancelSubscription(auth, params.id, body)],

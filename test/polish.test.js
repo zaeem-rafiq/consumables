@@ -33,3 +33,24 @@ test('admin order page shows the problem value, not NaN', async () => {
   assert.doesNotMatch(html, /NaN/);
   assert.match(html, /\$11\.99/);
 });
+
+test('skipping one item leaves it out of the next delivery only', async () => {
+  const { Store } = await import('../src/store.js');
+  const store = new Store();
+  const { account, api_key } = store.createAccount({ name: 'T', email: 't2@example.com' });
+  const owner = { accountId: account.id, role: 'owner' };
+  store.acceptTerms(owner);
+  await store.addPaymentMethod(owner, { token: 'pm_card_visa' });
+  store.addAddress(owner, { name: 'T', line1: '1 A St', city: 'B', region: 'AR', postal_code: '72712' });
+  const agent = store.authenticate(api_key);
+  const today = store.getAccount(account.id).today;
+  const d = new Date(`${today}T00:00:00Z`); d.setUTCDate(d.getUTCDate() + 5);
+  const sub = await store.createSubscription(agent, { items: [{ sku: 'TP-2PLY-30', quantity: 1 }, { sku: 'PT-2PLY-12', quantity: 1 }], cadence_days: 14, start_date: d.toISOString().slice(0, 10) });
+  const skipped = store.skipNext(agent, sub.id, { skus: ['PT-2PLY-12'] });
+  assert.deepEqual(skipped.skipping_next.skus, ['PT-2PLY-12']);
+  assert.throws(() => store.skipNext(agent, sub.id, { skus: ['NOPE'] }));
+  await store.advanceClock(agent, { days: 25 });
+  const orders = store.listOrders(agent, { limit: 10 }).reverse();
+  assert.deepEqual(orders[0].lines.map((l) => l.sku), ['TP-2PLY-30']);
+  assert.deepEqual(orders[1].lines.map((l) => l.sku).sort(), ['PT-2PLY-12', 'TP-2PLY-30']);
+});

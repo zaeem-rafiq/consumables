@@ -1360,6 +1360,7 @@ export class Store {
       next_charge_date: next && this.#chargeDate(next, bank),
       estimated_arrival_date: next && addDays(next, this.fulfillment === 'mock' ? 3 : 5),
       pause_until: s.pause_until,
+      ...(p(s.skip_once_json ?? '[]').length ? { skipping_next: { skus: p(s.skip_once_json), note: 'Left out of the next delivery only; they come back in the one after.' } } : {}),
       ...(s.status === 'paused' ? { resumes: s.pause_until ? `Resumes on ${s.pause_until}; the next order is placed that day.` : 'Paused until someone resumes it (resume_subscription).' } : {}),
       address_id: s.address_id,
       payment_method_id: s.payment_method_id,
@@ -1438,10 +1439,19 @@ export class Store {
     this.#emit(account.id, 'subscription.resumed', { subscription_id: s.id });
   }
 
-  skipNext(auth, subId) {
+  skipNext(auth, subId, { skus } = {}) {
     const account = this.#account(auth.accountId);
     const s = this.#sub(account.id, subId);
     this.#requireNotCanceled(s);
+    if (skus?.length) {
+      // Leave just these items out of the next delivery; they come back after it.
+      const have = new Set(p(s.items_json).map((i) => i.sku));
+      const missing = skus.filter((k) => !have.has(k));
+      if (missing.length) throw badRequest('invalid_param', `Not in this subscription: ${missing.join(', ')}.`, { param: 'skus', hint: `It has: ${[...have].join(', ')}.` });
+      this.#touch(account, s.id, { skip_once_json: j([...new Set(skus)]) });
+      this.#emit(account.id, 'subscription.items_skipped', { subscription_id: s.id, order_date: s.next_order_date, skus });
+      return this.getSubscription(auth, s.id);
+    }
     const next = addDays(s.next_order_date, s.cadence_days);
     this.#touch(account, s.id, { next_order_date: next });
     this.#emit(account.id, 'subscription.skipped', { subscription_id: s.id, skipped_date: s.next_order_date, next_order_date: next });
@@ -1529,7 +1539,11 @@ export class Store {
       const claimed = this.db.prepare("UPDATE subscriptions SET next_order_date = ?, updated_at = ? WHERE id = ? AND status = 'active' AND next_order_date = ?")
         .run(addDays(shipOn, s.cadence_days), account.clock, s.id, s.next_order_date);
       if (claimed.changes !== 1) continue;
-      const order = await this.#placeOrder(account, { items: p(s.items_json), addrId: s.address_id, pmId: s.payment_method_id, subscriptionId: s.id, fulfillOn: shipOn });
+      const skip = new Set(p(s.skip_once_json ?? '[]'));
+      const items = p(s.items_json).filter((i) => !skip.has(i.sku));
+      if (skip.size) this.db.prepare("UPDATE subscriptions SET skip_once_json = '[]' WHERE id = ?").run(s.id);
+      if (!items.length) continue; // every item skipped this time: no order
+      const order = await this.#placeOrder(account, { items, addrId: s.address_id, pmId: s.payment_method_id, subscriptionId: s.id, fulfillOn: shipOn });
       this.#syncSubscriptionAfterPayment(this.#account(accountId), order.id);
     }
 

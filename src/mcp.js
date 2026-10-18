@@ -187,8 +187,11 @@ export function buildMcpServer(store, session, { attachKeyOnSignup = true } = {}
   tool('resume_subscription', { title: 'Resume subscription', description: 'Resume a paused subscription. If an order was due during the pause it ships today.', input: { subscription_id: subId } },
     ({ subscription_id }) => store.resumeSubscription(auth(), subscription_id));
 
-  tool('skip_next_delivery', { title: 'Skip next delivery', description: 'Push the next order back by one cadence.', input: { subscription_id: subId } },
-    ({ subscription_id }) => store.skipNext(auth(), subscription_id));
+  tool('skip_next_delivery', {
+    title: 'Skip next delivery',
+    description: 'Skip the next delivery (pushes it back one cadence). With skus, skip only those items in the next delivery: the rest still ships on time and the skipped items come back in the delivery after. To stop an item for good, use update_subscription to remove it.',
+    input: { subscription_id: subId, skus: z.array(z.string()).optional().describe('Skip only these items, next delivery only') },
+  }, ({ subscription_id, skus }) => store.skipNext(auth(), subscription_id, { skus }));
 
   tool('ship_now', { title: 'Ship now', description: 'Place the next order today and restart the cadence from today.', input: { subscription_id: subId } },
     ({ subscription_id }) => store.shipNow(auth(), subscription_id));
