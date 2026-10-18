@@ -20,12 +20,12 @@ function routes(store) {
     ['GET', '/v1/categories', 'List product categories', 'none', () => store.listCategories()],
     ['GET', '/v1/products', 'Search products (?q=, ?category=, ?tag=)', 'none', ({ query }) => ({ data: store.listProducts(query) })],
     ['GET', '/v1/products/:sku', 'Get one product', 'none', ({ params }) => store.getProduct(params.sku)],
-    ['POST', '/v1/recommendations', 'Recommend a bundle for a household { household_size, skus?, cadence_days? }', 'optional', ({ auth, body }) => store.recommend(auth, body)],
+    ['POST', '/v1/recommendations', 'Recommend a bundle for a household { household_size, skus?, cadence_days? } -> plan (one to three deliveries; create one subscription each) and order_once (items that fit no schedule)', 'optional', ({ auth, body }) => store.recommend(auth, body)],
 
     ['POST', '/v1/accounts', "Developers: create an account { name, email (the owner's), household_size? } -> api_key. The owner is emailed a sign-in link. Households use Connect Domaru (OAuth) instead", 'none', ({ body }) => store.createAccount(body)],
     ['POST', '/v1/account/owner_invite', "Re-send the owner's sign-in link to the owner email on file", 'agent', ({ auth }) => store.resendOwnerInvite(auth)],
     ['GET', '/v1/account', 'Get the current account, policy and month-to-date spend', 'agent', ({ auth }) => store.getAccount(auth.accountId)],
-    ['PATCH', '/v1/account', 'Update { household_size?, name? } (email: owner only)', 'agent', ({ auth, body }) => store.updateAccount(auth, body)],
+    ['PATCH', '/v1/account', 'Update { household_size?, name? } (email: owner only). A household_size change returns subscriptions_to_adjust with a ready suggested_update for each; if the change happens before the next delivery (even one resuming after a pause), make it now', 'agent', ({ auth, body }) => store.updateAccount(auth, body)],
     ['PATCH', '/v1/account/policy', 'Owner only: update spend policy', 'owner', ({ auth, body }) => store.updatePolicy(auth, body)],
 
     ['POST', '/v1/payment_methods', 'Test mode: add a card or bank account from a token { token } (pm_card_visa, pm_card_declined, pm_usBankAccount_success, ...)', 'agent', ({ auth, body }) => store.addPaymentMethod(auth, body)],

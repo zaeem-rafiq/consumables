@@ -68,7 +68,7 @@ export function buildMcpServer(store, session, { attachKeyOnSignup = true } = {}
 
   tool('recommend_bundle', {
     title: 'Recommend a bundle',
-    description: 'Suggest quantities for recurring deliveries based on household size and cadence. Returns plan: one to three deliveries (each with items and cadence_days), so long-lasting items come less often. Create one subscription per plan entry. Without skus, plans a starter set of everyday essentials.',
+    description: 'Suggest quantities for recurring deliveries based on household size and cadence. Returns plan: one to three deliveries (each with items and cadence_days), so long-lasting items come less often. Create one subscription per plan entry. order_once lists anything that fits no schedule (offer it as a one-time order). Without skus, plans a starter set of everyday essentials.',
     readOnly: true,
     input: {
       household_size: z.number().int().min(1).max(20).optional().describe('People in the household; defaults to the account value'),
@@ -109,7 +109,7 @@ export function buildMcpServer(store, session, { attachKeyOnSignup = true } = {}
 
   tool('update_household', {
     title: 'Update household',
-    description: 'Change household size (used for recommendations).',
+    description: 'Change the household size. Domaru sizes recommendations and supply checks to it, and the response lists subscriptions that no longer fit, each with a ready suggested_update. If someone joins or leaves before the next delivery (including one that resumes after a pause), update it now and apply the suggested updates, so that delivery is sized right: you may not get another chance to check in first.',
     input: { household_size: z.number().int().min(1).max(20) },
   }, ({ household_size }) => store.updateAccount(auth(), { household_size }));
 
