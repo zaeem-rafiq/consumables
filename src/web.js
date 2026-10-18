@@ -48,9 +48,24 @@ export class RateLimit {
   }
 }
 
-export function clientIp(req) {
-  const fwd = req.headers['cf-connecting-ip'] ?? String(req.headers['x-forwarded-for'] ?? '').split(',')[0].trim();
-  return fwd || req.socket?.remoteAddress || 'unknown';
+const PRIVATE_PEER = /^(::ffff:)?(127\.|10\.|192\.168\.|172\.(1[6-9]|2\d|3[01])\.)|^(::1|f[cd][0-9a-f]{2}:)/i;
+
+/**
+ * The caller's address for rate limits. Forwarding headers can be typed by
+ * anyone, so they only count when they come from a proxy we trust:
+ * 'auto' (default) trusts X-Forwarded-For when the direct peer is a private
+ * address (a reverse proxy on the same network) and takes the entry that proxy
+ * appended (the last one); 'cloudflare' trusts CF-Connecting-IP; 'none' uses
+ * the socket address only.
+ */
+export function clientIp(req, trustProxy = 'auto') {
+  const peer = req.socket?.remoteAddress || 'unknown';
+  if (trustProxy === 'cloudflare') return String(req.headers['cf-connecting-ip'] ?? '').trim() || peer;
+  if (trustProxy === 'auto' && PRIVATE_PEER.test(peer)) {
+    const hops = String(req.headers['x-forwarded-for'] ?? '').split(',').map((x) => x.trim()).filter(Boolean);
+    return hops.at(-1) || peer;
+  }
+  return peer;
 }
 
 function cookies(req) {
@@ -92,7 +107,7 @@ const sameKey = (a, b) => {
 /**
  * @returns {Promise<boolean>} true when the request was a web route and has been answered.
  */
-export async function handleWeb(store, req, res, url, { base, adminKey, stripeWebhookSecret, send, limits }) {
+export async function handleWeb(store, req, res, url, { base, adminKey, stripeWebhookSecret, send, limits, trustProxy }) {
   const path = url.pathname;
   const html = (status, body, headers = {}) => {
     res.writeHead(status, { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store', 'x-frame-options': 'DENY', 'referrer-policy': 'no-referrer', ...headers });
@@ -106,7 +121,7 @@ export async function handleWeb(store, req, res, url, { base, adminKey, stripeWe
   };
   const jar = cookies(req);
   const owner = () => store.ownerSession(jar[OWNER_COOKIE]);
-  const ip = clientIp(req);
+  const ip = clientIp(req, trustProxy);
 
   // ---- self-hosted fonts
   if (req.method === 'GET' && path.startsWith('/fonts/') && FONT_FILES.has(path.slice(7))) {

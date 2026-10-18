@@ -287,3 +287,51 @@ test('F8: payment provider errors are generic', async () => {
     console.error = errors;
   }
 });
+
+// ---- Second pass (security/security-review-2.md)
+
+test('S2-1: a live sign-up under an email that already has a household is refused', () => {
+  const store = new Store({ mode: 'live' });
+  store.createAccount({ name: 'Real', email: 'owner@example.com' });
+  assert.throws(() => store.createAccount({ name: 'Copy', email: 'Owner@Example.com' }), (e) => e.code === 'owner_has_account');
+});
+
+test('S2-2: rate limits ignore forwarding headers a caller types in', async () => {
+  const { clientIp } = await import('../src/web.js');
+  const direct = { socket: { remoteAddress: '203.0.113.7' }, headers: { 'x-forwarded-for': '10.9.9.9', 'cf-connecting-ip': '10.8.8.8' } };
+  assert.equal(clientIp(direct), '203.0.113.7');
+  // Behind a local proxy, the proxy appends the real address last; earlier entries are the caller's own text.
+  const proxied = { socket: { remoteAddress: '127.0.0.1' }, headers: { 'x-forwarded-for': '1.2.3.4, 198.51.100.2' } };
+  assert.equal(clientIp(proxied), '198.51.100.2');
+  assert.equal(clientIp({ ...direct, headers: { 'cf-connecting-ip': '198.51.100.9' } }, 'cloudflare'), '198.51.100.9');
+  assert.equal(clientIp(proxied, 'none'), '127.0.0.1');
+
+  const { server, base } = await serve(new Store(), { adminKey: 'k'.repeat(30) });
+  try {
+    let blocked = 0;
+    for (let i = 0; i < 15; i++) {
+      const r = await fetch(`${base}/admin/login`, { ...form({ key: 'wrong' }), headers: { 'content-type': 'application/x-www-form-urlencoded', 'x-forwarded-for': `10.0.${i}.1, 198.51.100.2` } });
+      if (r.status === 429) blocked++;
+    }
+    assert.equal(blocked, 5);
+  } finally {
+    server.close();
+  }
+});
+
+test('S2-3: the owner invite can be re-sent at most once every 10 minutes', async () => {
+  const { store, agent } = await setup();
+  assert.throws(() => store.resendOwnerInvite(agent), (e) => e.code === 'invite_recently_sent');
+  await store.advanceClock(agent, { days: 1 });
+  assert.equal(store.resendOwnerInvite(agent).sent_to, 'owner@example.com');
+});
+
+test('S2-4: the Connect page names the website Allow sends the owner to', async () => {
+  const { connectPage } = await import('../src/owner.js');
+  const page = connectPage({
+    client: { id: 'cl_1', name: 'Claude' }, account: { default_payment_method_id: null }, checklist: { address: false, payment_method: false, terms: false },
+    addresses: [], paymentMethods: [], policy: { approval_required_above_cents: 10000, per_order_limit_cents: 15000, monthly_limit_cents: 40000 },
+    oauth: { client_id: 'cl_1', redirect_uri: 'https://evil.example/callback' }, back: '/oauth/authorize', testMode: true,
+  });
+  assert.match(page, /sends you back to <strong>evil\.example<\/strong>/);
+});

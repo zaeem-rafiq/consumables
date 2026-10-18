@@ -164,7 +164,7 @@ function bearer(req) {
   return h.toLowerCase().startsWith('bearer ') ? h.slice(7).trim() : null;
 }
 
-export function createApp(store, { baseUrl, adminKey, stripeWebhookSecret } = {}) {
+export function createApp(store, { baseUrl, adminKey, stripeWebhookSecret, trustProxy } = {}) {
   const table = routes(store);
   const limits = {
     signin: new RateLimit(5, 15 * 60_000),
@@ -211,7 +211,7 @@ export function createApp(store, { baseUrl, adminKey, stripeWebhookSecret } = {}
         return res.end();
       }
       if (url.pathname === '/mcp') return await handleMcp(req, res, base);
-      if (await handleWeb(store, req, res, url, { base, adminKey, stripeWebhookSecret, send, limits })) return;
+      if (await handleWeb(store, req, res, url, { base, adminKey, stripeWebhookSecret, send, limits, trustProxy })) return;
       if (req.method === 'GET' && url.pathname === '/') {
         if ((req.headers.accept ?? '').includes('text/markdown')) return send(res, 200, llmsTxt(table, base), 'text/markdown');
         if ((req.headers.accept ?? '').includes('text/html')) return send(res, 200, landingPage({ base }), 'text/html');
@@ -243,7 +243,7 @@ export function createApp(store, { baseUrl, adminKey, stripeWebhookSecret } = {}
       if (route.auth === 'agent' || route.auth === 'owner') auth = store.authenticate(key);
       else if (route.auth === 'optional' && key) auth = store.authenticate(key);
 
-      if ((route.path === '/v1/accounts' && !limits.accounts.hit(clientIp(req))) || (/setup_link$/.test(route.path) && !limits.setup.hit(clientIp(req)))) {
+      if ((route.path === '/v1/accounts' && !limits.accounts.hit(clientIp(req, trustProxy))) || (/setup_link$/.test(route.path) && !limits.setup.hit(clientIp(req, trustProxy)))) {
         throw new ApiError(429, 'rate_limited', 'Too many requests from this network.', { hint: 'Try again in an hour.' });
       }
       const run = () => route.handler({ auth, params, query, body });
@@ -264,7 +264,7 @@ export function createApp(store, { baseUrl, adminKey, stripeWebhookSecret } = {}
   };
 }
 
-export function startServer(store, { port = 8787, host = '0.0.0.0', baseUrl, adminKey, stripeWebhookSecret } = {}) {
-  const server = createServer(createApp(store, { baseUrl, adminKey, stripeWebhookSecret }));
+export function startServer(store, { port = 8787, host = '0.0.0.0', baseUrl, adminKey, stripeWebhookSecret, trustProxy } = {}) {
+  const server = createServer(createApp(store, { baseUrl, adminKey, stripeWebhookSecret, trustProxy }));
   return new Promise((resolve) => server.listen(port, host, () => resolve(server)));
 }

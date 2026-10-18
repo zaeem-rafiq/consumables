@@ -82,6 +82,10 @@ function limitsForm(back, policy) {
 const step = (done, n, title, body) => `<li class="step${done ? ' step--done' : ''}"><span class="step__mark" aria-hidden="true">${done ? '' : n}</span>
   <div class="step__body"><h3>${esc(title)}</h3>${body}</div></li>`;
 
+const hostOf = (u) => {
+  try { return new URL(u).host; } catch { return 'an unknown website'; }
+};
+
 /** The page an assistant's "Connect Domaru" sends the owner to. */
 export function connectPage({ client, account, checklist, addresses, paymentMethods, policy, oauth, back, testMode, error }) {
   const addr = addresses.find((a) => a.confirmed);
@@ -90,6 +94,7 @@ export function connectPage({ client, account, checklist, addresses, paymentMeth
   return layout(`Connect ${client.name}`, `<div class="stack">
     <h1 class="title">Connect ${esc(client.name)}</h1>
     <p class="lede">${esc(client.name)} will order household supplies for you within the limits below. It can't approve its own orders or change your limits, and you can disconnect it any time.</p>
+    <p class="small muted">Tapping Allow sends you back to <strong>${esc(hostOf(oauth.redirect_uri))}</strong>. If that isn't your assistant's website, tap Cancel.</p>
     ${error ? `<p class="notice notice--stop">${esc(error)}</p>` : ''}
     <ol class="steps">
       ${step(!!addr, 1, 'Where should orders go?', addr
