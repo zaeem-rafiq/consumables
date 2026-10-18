@@ -6,6 +6,7 @@
 // supermarket shelf-edge label plus a live look at the trust layer: the agent's
 // own calls on the left, the owner's approval card on the right.
 
+import { FONT_HEAD } from './ui.js';
 import { PRODUCTS, presentProduct, monthlyUsage, baseUnitsPerPack } from './catalog.js';
 
 const esc = (v) => String(v ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]);
@@ -213,7 +214,9 @@ footer { padding-block: var(--s8) var(--s10); display: grid; gap: var(--s5); }
 .agent-note { font: 400 0.8125rem/1.6 var(--mono); color: var(--muted); max-width: 82ch; }
 `;
 
-const FONTS = 'https://fonts.googleapis.com/css2?family=Barlow+Condensed:wght@800;900&family=Barlow:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;700&display=swap';
+// Only the static preview (published outside the store) loads Google Fonts;
+// the live store serves its own copies via FONT_HEAD.
+const PREVIEW_FONTS = 'https://fonts.googleapis.com/css2?family=Barlow+Condensed:wght@800;900&family=Barlow:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;700&display=swap';
 
 const SCRIPT = `
 (() => {
@@ -364,8 +367,7 @@ export function landingPage({ base = '' } = {}) {
 <title>Domaru</title>
 <meta name="description" content="Your AI agent keeps the house stocked. You set the limits. It can't overspend.">
 <link rel="alternate" type="text/markdown" href="${esc(base)}/llms.txt">
-<link rel="preconnect" href="https://fonts.googleapis.com"><link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<link rel="stylesheet" href="${FONTS}">
+${FONT_HEAD}
 <style>${STYLE}</style></head><body>${landingBody({ base })}</body></html>`;
 }
 
@@ -373,7 +375,7 @@ export function landingPage({ base = '' } = {}) {
 export function landingPreview({ base = 'https://domaru.app' } = {}) {
   return `<title>Domaru</title>
 <meta name="claude:viewport-fit-sides" content="cover">
-<link rel="stylesheet" href="${FONTS}">
+<link rel="stylesheet" href="${PREVIEW_FONTS}">
 <style>${STYLE}</style>
 ${landingBody({ base })}`;
 }

@@ -7,7 +7,13 @@
 export const esc = (v) => String(v ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]);
 export const usd = (cents) => `$${(cents / 100).toFixed(2)}`;
 
-export const FONTS = 'https://fonts.googleapis.com/css2?family=Barlow+Condensed:wght@800;900&family=Barlow:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;700&display=swap';
+// Fonts are served by the store itself (assets/fonts, SIL Open Font License),
+// so no page asks a third party for anything and visitors' addresses stay ours.
+const FACES = [['Barlow', 'barlow', [400, 500, 600, 700]], ['Barlow Condensed', 'barlow-condensed', [800, 900]], ['JetBrains Mono', 'jetbrains-mono', [400, 500, 700]]];
+export const FONT_FILES = new Set(FACES.flatMap(([, slug, ws]) => ws.map((w) => `${slug}-latin-${w}-normal.woff2`)));
+const FONT_CSS = FACES.flatMap(([family, slug, ws]) => ws.map((w) => `@font-face{font-family:'${family}';font-style:normal;font-weight:${w};font-display:swap;src:url(/fonts/${slug}-latin-${w}-normal.woff2) format('woff2')}`)).join('');
+/** Goes in <head>: preloads the two faces every page uses, then declares them all. */
+export const FONT_HEAD = ['barlow-latin-400-normal', 'barlow-condensed-latin-900-normal'].map((f) => `<link rel="preload" href="/fonts/${f}.woff2" as="font" type="font/woff2" crossorigin>`).join('') + `<style>${FONT_CSS}</style>`;
 
 const STYLE = `
 :root {
@@ -203,8 +209,7 @@ export function layout(title, body, { wide = false, right = '', support = 'suppo
 <title>${esc(title)} · Domaru</title>
 ${robots ? '' : '<meta name="robots" content="noindex">'}
 <meta name="referrer" content="no-referrer">
-<link rel="preconnect" href="https://fonts.googleapis.com"><link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<link rel="stylesheet" href="${FONTS}">
+${FONT_HEAD}
 <style>${STYLE}</style></head><body>
 <header class="top"><div class="wrap${wide ? ' wrap--wide' : ''}"><a class="logo" href="/"><i aria-hidden="true"></i>Domaru</a><div class="top__right">${right}</div></div></header>
 <main><div class="wrap${wide ? ' wrap--wide' : ''}">${body}</div></main>

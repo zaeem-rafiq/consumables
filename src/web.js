@@ -5,7 +5,7 @@
 import { readFileSync } from 'node:fs';
 import { createHash, timingSafeEqual } from 'node:crypto';
 import { ApiError } from './errors.js';
-import { messagePage, policyPage } from './ui.js';
+import { messagePage, policyPage, FONT_FILES } from './ui.js';
 import { signInPage, checkEmailPage, connectPage, approvalPage, ownerPage } from './owner.js';
 import { adminLoginPage, fulfillmentPage, adminOrderPage, emailLogPage } from './admin.js';
 import { verifyStripeEvent } from './payments.js';
@@ -107,6 +107,13 @@ export async function handleWeb(store, req, res, url, { base, adminKey, stripeWe
   const jar = cookies(req);
   const owner = () => store.ownerSession(jar[OWNER_COOKIE]);
   const ip = clientIp(req);
+
+  // ---- self-hosted fonts
+  if (req.method === 'GET' && path.startsWith('/fonts/') && FONT_FILES.has(path.slice(7))) {
+    res.writeHead(200, { 'content-type': 'font/woff2', 'cache-control': 'public, max-age=31536000, immutable', 'access-control-allow-origin': '*' });
+    res.end(readFileSync(new URL(`../assets/fonts/${path.slice(7)}`, import.meta.url)));
+    return true;
+  }
 
   // ---- policies
   if (req.method === 'GET' && POLICIES[path]) return html(200, policyPage(POLICIES[path][0], policyText[path]));
