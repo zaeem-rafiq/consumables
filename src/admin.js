@@ -92,7 +92,7 @@ export function messagePage(title, message) {
 
 // Draft policy pages, linked from UCP checkouts. Replace with reviewed text before launch.
 export function termsPage() {
-  return page('Terms of service', `<h1>Terms of service</h1><p class="muted">Draft. Consumables is in private testing; final terms will be published before launch.</p>
+  return page('Terms of service', `<h1>Terms of service</h1><p class="muted">Draft. Domaru is in private testing; final terms will be published before launch.</p>
     <ul>
       <li>We buy household supplies from major retailers and arrange delivery to your address. The box may show the retailer's name.</li>
       <li>You see the full price, shipping and tax before anything is charged, and that is the amount charged.</li>

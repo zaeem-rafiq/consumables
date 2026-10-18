@@ -11,7 +11,7 @@ const subId = z.string().describe('Subscription id (sub_...)');
 const date = z.string().regex(/^\d{4}-\d{2}-\d{2}$/).describe('Date as YYYY-MM-DD, in the account clock');
 const idemKey = z.string().max(255).optional().describe('Optional. Reuse the same key when retrying so the action runs at most once.');
 
-const INSTRUCTIONS = `Consumables sells everyday household supplies (toilet paper, paper towels, dish soap, trash bags, detergent...) on subscription, built for agents.
+const INSTRUCTIONS = `Domaru sells everyday household supplies (toilet paper, paper towels, dish soap, trash bags, detergent...) on subscription, built for agents.
 Typical flow: recommend_bundle -> quote -> create_subscription. Then manage with update_subscription, pause_subscription, skip_next_delivery, ship_now, report_supply_level and cancel_subscription.
 Prices are integer cents (USD). Subscriptions get 5% off; orders of $35+ after discount ship free.
 Spend policy is set by the human owner. Orders over policy are held with status "requires_approval"; tell the human, do not retry. Agents cannot approve orders or raise limits.
@@ -24,7 +24,7 @@ Sandbox only: advance_test_clock moves time forward to simulate renewals and del
  * @param {{ attachKeyOnSignup?: boolean }} opts
  */
 export function buildMcpServer(store, session, { attachKeyOnSignup = true } = {}) {
-  const server = new McpServer({ name: 'consumables', version: '0.1.0' }, { instructions: INSTRUCTIONS });
+  const server = new McpServer({ name: 'domaru', version: '0.1.0' }, { instructions: INSTRUCTIONS });
 
   const auth = () => store.authenticate(session.apiKey);
   const ok = (data) => ({ content: [{ type: 'text', text: JSON.stringify(data, null, 2) }] });

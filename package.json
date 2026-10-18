@@ -1,5 +1,5 @@
 {
-  "name": "consumables",
+  "name": "domaru",
   "version": "0.1.0",
   "description": "Household consumables on subscription, built for AI agents (HTTP API + MCP).",
   "main": "src/store.js",
@@ -15,8 +15,8 @@
   },
   "type": "module",
   "bin": {
-    "consumables-server": "bin/server.js",
-    "consumables-mcp": "bin/mcp-stdio.js"
+    "domaru-server": "bin/server.js",
+    "domaru-mcp": "bin/mcp-stdio.js"
   },
   "engines": {
     "node": ">=22.5"

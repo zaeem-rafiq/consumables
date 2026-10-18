@@ -2,7 +2,7 @@
 // HTTP API + remote MCP endpoint.
 //
 // Environment:
-//   PORT, CONSUMABLES_DB        server port and SQLite file
+//   PORT, DOMARU_DB        server port and SQLite file
 //   PUBLIC_URL                  public base URL (required with Stripe, for card setup return pages)
 //   STRIPE_SECRET_KEY           enables real Stripe payments (sk_test_... or sk_live_...)
 //   FULFILLMENT                 mock (default) or manual (concierge: orders wait on the /admin page)
@@ -22,9 +22,9 @@ if (mode === 'live' && (fulfillment !== 'manual' || !env.ADMIN_KEY)) {
   throw new Error('Live mode needs FULFILLMENT=manual and ADMIN_KEY so real orders reach a person.');
 }
 
-const store = new Store({ dbPath: env.CONSUMABLES_DB ?? 'consumables.db', payments, fulfillment, mode });
+const store = new Store({ dbPath: env.DOMARU_DB ?? 'domaru.db', payments, fulfillment, mode });
 const server = await startServer(store, { port: Number(env.PORT ?? 8787), baseUrl: env.PUBLIC_URL, adminKey: env.ADMIN_KEY });
-console.log(`Consumables API on http://localhost:${server.address().port}  (${mode} mode, payments: ${store.payments.name}, fulfillment: ${fulfillment})`);
+console.log(`Domaru API on http://localhost:${server.address().port}  (${mode} mode, payments: ${store.payments.name}, fulfillment: ${fulfillment})`);
 
 // Live accounts run on the real clock, so renewals need a scheduler.
 if (mode === 'live') {

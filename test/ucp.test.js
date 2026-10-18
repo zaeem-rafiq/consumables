@@ -40,7 +40,7 @@ test('UCP discovery profile advertises checkout over REST', async () => {
     assert.equal(profile.ucp.services['dev.ucp.shopping'][0].endpoint, `${base}/ucp`);
     assert.ok(profile.ucp.capabilities['dev.ucp.shopping.checkout']);
     assert.ok(profile.ucp.capabilities['dev.ucp.shopping.fulfillment'][0].extends);
-    assert.ok(profile.ucp.payment_handlers['com.consumables.account_card']);
+    assert.ok(profile.ucp.payment_handlers['app.domaru.account_card']);
   });
 });
 

@@ -75,7 +75,7 @@ export class StripePayments {
 
   async ensureCustomer({ accountId, name, email, existing }) {
     if (existing) return existing;
-    const c = await this.#request('POST', '/v1/customers', { name, email, metadata: { consumables_account_id: accountId } }, `cus-${accountId}`);
+    const c = await this.#request('POST', '/v1/customers', { name, email, metadata: { domaru_account_id: accountId } }, `cus-${accountId}`);
     return c.id;
   }
 
@@ -126,7 +126,7 @@ export class StripePayments {
         payment_method: pmRef,
         off_session: true,
         confirm: true,
-        description: `Consumables order ${orderId}`,
+        description: `Domaru order ${orderId}`,
         metadata: { order_id: orderId },
       }, `charge-${orderId}-${attempt}`);
       if (pi.status === 'succeeded' || pi.status === 'processing') return { status: 'succeeded', failure_code: null, ref: pi.id };

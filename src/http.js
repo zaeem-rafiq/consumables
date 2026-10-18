@@ -77,7 +77,7 @@ function openapi(table, baseUrl) {
   }
   return {
     openapi: '3.1.0',
-    info: { title: 'Consumables API', version: '0.1.0', description: 'Household consumables on subscription, built for AI agents.' },
+    info: { title: 'Domaru API', version: '0.1.0', description: 'Household consumables on subscription, built for AI agents.' },
     servers: [{ url: baseUrl }],
     components: { securitySchemes: { bearer: { type: 'http', scheme: 'bearer', description: 'ck_test_... (agent) or ok_test_... (owner)' } } },
     paths,
@@ -85,7 +85,7 @@ function openapi(table, baseUrl) {
 }
 
 function llmsTxt(table, baseUrl) {
-  return `# Consumables
+  return `# Domaru
 
 > Everyday household supplies (toilet paper, paper towels, dish soap, trash bags, detergent, batteries) on subscription, built for AI agents. JSON over HTTP or MCP.
 
@@ -201,7 +201,7 @@ export function createApp(store, { baseUrl, adminKey } = {}) {
         if ((req.headers.accept ?? '').includes('text/markdown')) return send(res, 200, llmsTxt(table, base), 'text/markdown');
         if ((req.headers.accept ?? '').includes('text/html')) return send(res, 200, landingPage({ base }), 'text/html');
         return send(res, 200, {
-          name: 'Consumables', description: 'Household consumables on subscription, built for AI agents.',
+          name: 'Domaru', description: 'Household consumables on subscription, built for AI agents.',
           mcp: `${base}/mcp`, openapi: `${base}/openapi.json`, llms_txt: `${base}/llms.txt`, quickstart: 'POST /v1/accounts {"name":"..."}',
         });
       }
@@ -217,7 +217,7 @@ export function createApp(store, { baseUrl, adminKey } = {}) {
       if (req.method === 'GET' && url.pathname === '/setup/complete') {
         try {
           await store.completeCardSetup(url.searchParams.get('session_id') ?? '');
-          return send(res, 200, messagePage('Card saved', 'Your card is saved for Consumables orders. You can close this tab; your agent will take it from here.'), 'text/html');
+          return send(res, 200, messagePage('Card saved', 'Your card is saved for Domaru orders. You can close this tab; your agent will take it from here.'), 'text/html');
         } catch (err) {
           return send(res, err.status ?? 500, messagePage('Card not saved', err.hint ?? 'Something went wrong. Please try the link again.'), 'text/html');
         }

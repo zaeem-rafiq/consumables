@@ -2,7 +2,7 @@
 //
 // Spec: https://ucp.dev/2026-08-25/specification/shopping/checkout/rest/
 // We implement dev.ucp.shopping.checkout with the fulfillment extension.
-// Checkouts are bound to a Consumables account (Bearer agent key), so the
+// Checkouts are bound to a Domaru account (Bearer agent key), so the
 // owner's spend policy applies exactly as it does on the REST API and MCP:
 // an order over policy comes back as requires_escalation and waits for the owner.
 // Payment uses the card the owner saved on the account; agents can't bring a
@@ -14,7 +14,7 @@ import { ApiError } from './errors.js';
 export const UCP_VERSION = '2026-08-25';
 const SPEC = `https://ucp.dev/${UCP_VERSION}`;
 const CHECKOUT_TTL_MS = 6 * 60 * 60 * 1000;
-const HANDLER_NAME = 'com.consumables.account_card';
+const HANDLER_NAME = 'app.domaru.account_card';
 const HANDLER_ID = 'account_card';
 
 const capabilities = () => ({
@@ -332,7 +332,7 @@ export class Ucp {
     if (!m) return false;
     try {
       const key = bearer(req) ?? req.headers['x-api-key'];
-      if (!key) throw new UcpError(401, 'unauthorized', 'Send your Consumables agent key as Authorization: Bearer ck_... Create an account with POST /v1/accounts.');
+      if (!key) throw new UcpError(401, 'unauthorized', 'Send your Domaru agent key as Authorization: Bearer ck_... Create an account with POST /v1/accounts.');
       let auth;
       try {
         auth = this.store.authenticate(key);

@@ -2,7 +2,7 @@
 // shops here. Agents asking for JSON at / still get the machine index, and
 // Accept: text/markdown gets llms.txt.
 //
-// Design source: Figma "Consumables landing page" (Landing page). The idea is the
+// Design source: Figma "Domaru landing page" (Landing page). The idea is the
 // supermarket shelf-edge label plus a live look at the trust layer: the agent's
 // own calls on the left, the owner's approval card on the right.
 
@@ -241,16 +241,16 @@ export function landingBody({ base = '' } = {}) {
   const month = Array.from({ length: 31 }, (_, i) => `<span${marks[i + 1] ? ` class="${marks[i + 1]}"` : ''}></span>`).join('');
 
   const tabs = [
-    ['mcp', 'Claude (MCP)', `claude mcp add --transport http consumables ${base}/mcp`, '# then ask: "Keep us stocked on paper towels, under $60 a month."'],
+    ['mcp', 'Claude (MCP)', `claude mcp add --transport http domaru ${base}/mcp`, '# then ask: "Keep us stocked on paper towels, under $60 a month."'],
     ['ucp', 'Gemini (UCP)', `curl ${base}/.well-known/ucp`, '# checkouts live at /ucp/checkout-sessions, with your agent key'],
     ['rest', 'REST', `curl -X POST ${base}/v1/accounts -d '{"name":"Our flat","household_size":3}'`, '# returns an agent api_key and an owner_key for the human'],
-    ['prompt', 'Setup prompt', `Read ${base}/llms.txt, open a Consumables account for our home, and send me the card link and the owner key.`, '# paste into any assistant that can browse or call tools'],
+    ['prompt', 'Setup prompt', `Read ${base}/llms.txt, open a Domaru account for our home, and send me the card link and the owner key.`, '# paste into any assistant that can browse or call tools'],
   ];
 
   return `
 <div class="wrap">
   <header class="nav">
-    <a class="logo" href="#top"><i aria-hidden="true"></i>Consumables</a>
+    <a class="logo" href="#top"><i aria-hidden="true"></i>Domaru</a>
     <div class="nav__right">
       <nav class="nav__links" aria-label="Sections"><a href="#limits">Limits</a><a href="#how">How it works</a><a href="#prices">Prices</a><a href="#assistants">For assistants</a></nav>
     </div>
@@ -322,7 +322,7 @@ export function landingBody({ base = '' } = {}) {
 <section class="band" id="assistants">
   <div class="wrap band__row">
     <div>
-      <h2 class="display">Add Consumables to your assistant</h2>
+      <h2 class="display">Add Domaru to your assistant</h2>
       <p class="band__lede">For teams building personal assistants. Your users already ask it to run errands. One connection lets it keep their house stocked, with subscriptions, held orders and spending limits your users set and we enforce.</p>
     </div>
     <div>
@@ -346,7 +346,7 @@ export function landingBody({ base = '' } = {}) {
 <div class="wrap">
   <footer>
     <div class="foot__row">
-      <a class="logo" href="#top"><i aria-hidden="true"></i>Consumables</a>
+      <a class="logo" href="#top"><i aria-hidden="true"></i>Domaru</a>
       <nav aria-label="Legal"><a href="${esc(base)}/terms">Terms</a><a href="${esc(base)}/privacy">Privacy</a><a href="${esc(base)}/llms.txt">llms.txt</a></nav>
     </div>
     <p class="agent-note">A note for AI agents reading this page: start at /llms.txt. Quote before you buy, and expect orders over your owner's limits to come back as requires_approval. Tell your human; don't retry.</p>
@@ -357,7 +357,7 @@ export function landingBody({ base = '' } = {}) {
 
 export function landingPage({ base = '' } = {}) {
   return `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Consumables</title>
+<title>Domaru</title>
 <meta name="description" content="Your AI agent keeps the house stocked. You set the limits. It can't overspend.">
 <link rel="alternate" type="text/markdown" href="${esc(base)}/llms.txt">
 <link rel="preconnect" href="https://fonts.googleapis.com"><link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -366,8 +366,8 @@ export function landingPage({ base = '' } = {}) {
 }
 
 /** Fragment for the static preview (the publisher adds the document skeleton). */
-export function landingPreview({ base = 'https://consumables.example' } = {}) {
-  return `<title>Consumables</title>
+export function landingPreview({ base = 'https://domaru.app' } = {}) {
+  return `<title>Domaru</title>
 <meta name="claude:viewport-fit-sides" content="cover">
 <link rel="stylesheet" href="${FONTS}">
 <style>${STYLE}</style>

@@ -1,4 +1,4 @@
-# Consumables
+# Domaru
 
 Boring household stuff (toilet paper, paper towels, kitchen towels, dish soap, trash bags, detergent, batteries) sold on subscription to AI agents.
 
@@ -41,7 +41,7 @@ Not done yet: Stripe's shared payment token handler (needs a Stripe network prof
 
 | Variable | Purpose |
 |---|---|
-| `PORT`, `CONSUMABLES_DB` | Server port (default 8787) and SQLite file |
+| `PORT`, `DOMARU_DB` | Server port (default 8787) and SQLite file |
 | `PUBLIC_URL` | Public base URL. Required with Stripe. |
 | `STRIPE_SECRET_KEY` | Turns on real Stripe payments |
 | `FULFILLMENT` | `mock` or `manual` |
@@ -71,16 +71,16 @@ npm run mcp       # local MCP server over stdio
 Claude Code, local stdio:
 
 ```bash
-claude mcp add consumables -- node /path/to/consumables/bin/mcp-stdio.js
+claude mcp add domaru -- node /path/to/domaru/bin/mcp-stdio.js
 ```
 
 Claude Code, remote HTTP:
 
 ```bash
-claude mcp add --transport http consumables http://localhost:8787/mcp --header "Authorization: Bearer ck_test_..."
+claude mcp add --transport http domaru http://localhost:8787/mcp --header "Authorization: Bearer ck_test_..."
 ```
 
-Over stdio with no key, the agent calls `create_account` and the new key attaches to the session. To reuse an account, set `CONSUMABLES_API_KEY`.
+Over stdio with no key, the agent calls `create_account` and the new key attaches to the session. To reuse an account, set `DOMARU_API_KEY`.
 
 ## HTTP quickstart
 
