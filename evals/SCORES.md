@@ -6,3 +6,5 @@ One row per full run. "Tasks" is the share of task runs where every check passed
 |---|---|---|---|---|---|---|
 | 2026-10-18 | mvp 256bb18 | baseline (store with Connect Domaru) | claude-sonnet-5-5 | 3 | 90% | 98% |
 | 2026-10-18 | mvp 256bb18 | baseline (store with Connect Domaru) | claude-haiku-5-5 | 3 | 87% | 97% |
+| 2026-10-18 | df7bdd9 | round 1: two-speed bundle, pause dates, held-order guidance | claude-sonnet-5-5 | 3 | 100% | 100% |
+| 2026-10-18 | df7bdd9 | round 1: two-speed bundle, pause dates, held-order guidance | claude-haiku-5-5 | 3 | 100% | 100% |

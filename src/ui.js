@@ -60,6 +60,7 @@ h2.section { font: 800 1.375rem/1.15 var(--display); text-transform: uppercase; 
 .btn--primary { background: var(--tag); border-color: var(--tag); color: #141414; }
 .btn--primary:hover { background: var(--tag-hover); border-color: var(--tag-hover); }
 .btn--quiet { border-color: var(--rule); }
+.btn--dark { background: var(--ink); border-color: var(--ink); color: var(--paper); }
 .btn--stop { border-color: var(--stop); color: var(--stop); }
 .btn--sm { min-height: 40px; padding: 0.5rem 1rem; font-size: 0.9375rem; }
 .btn--block { width: 100%; }
@@ -141,7 +142,9 @@ mark.blank { background: var(--warn-bg); color: var(--ink); padding: 0 0.25rem; 
 .why { list-style: none; margin: 0; padding: 0; display: grid; gap: 0.375rem; }
 .why li { display: grid; grid-template-columns: 10px minmax(0, 1fr); gap: 0.625rem; align-items: baseline; color: var(--ink-2); font-size: 0.9375rem; }
 .why li::before { content: ""; width: 10px; height: 10px; background: var(--stop); transform: translateY(1px); }
-.owner__actions { display: grid; grid-template-columns: 1fr 1fr; gap: var(--s2); }
+.owner__actions { display: grid; grid-template-columns: 1fr; gap: var(--s2); }
+@media (min-width: 420px) { .owner__actions { grid-template-columns: 1fr 1fr; } }
+.owner__actions .btn { height: 100%; white-space: nowrap; }
 .owner__actions form, .owner__actions .btn { width: 100%; }
 .meter { display: grid; gap: 6px; }
 .meter__row { display: flex; justify-content: space-between; gap: var(--s3); font-size: 0.8125rem; color: var(--muted); }
@@ -159,7 +162,7 @@ mark.blank { background: var(--warn-bg); color: var(--ink); padding: 0 0.25rem; 
 .sign__label { font: 600 0.75rem/1 var(--body); letter-spacing: 0.08em; text-transform: uppercase; color: var(--muted); }
 .sign__big { font: 900 clamp(2.75rem, 6vw, 3.5rem)/0.9 var(--display); color: var(--ink); font-variant-numeric: tabular-nums; border-bottom: 4px solid var(--ink); padding-bottom: var(--s3); overflow-wrap: anywhere; }
 .sign__big--quiet { color: var(--muted); border-bottom-color: var(--rule); }
-.sign p { font-size: 0.9375rem; }
+.sign > p:not([class]) { font-size: 0.9375rem; }
 .cards { display: grid; gap: var(--s4); grid-template-columns: minmax(0, 1fr); }
 @media (min-width: 760px) { .cards { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
 .sched { list-style: none; margin: 0; padding: 0; border-top: 2px solid var(--ink); }
