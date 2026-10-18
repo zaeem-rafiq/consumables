@@ -20,6 +20,8 @@ services:
       - domaru.app
       - www.domaru.app
     envVars:
+      - key: TRUST_PROXY
+        value: auto
       - key: NODE_VERSION
         value: "22"
       - key: DOMARU_DB
