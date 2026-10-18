@@ -658,21 +658,21 @@ export class Store {
     const reasons = [];
     const addr = addrId ? this.db.prepare('SELECT confirmed FROM addresses WHERE id = ?').get(addrId) : null;
     if (addr && !addr.confirmed) {
-      reasons.push({ code: 'new_address', message: 'First order to an address the owner has not confirmed yet.' });
+      reasons.push({ code: 'new_address', message: 'This is the first order to a new delivery address.' });
     }
     if (policy.approval_required_above_cents != null && total > policy.approval_required_above_cents) {
-      reasons.push({ code: 'above_approval_threshold', message: `Order total ${total} exceeds approval threshold ${policy.approval_required_above_cents}.` });
+      reasons.push({ code: 'above_approval_threshold', message: `${usd(total)} is over the ${usd(policy.approval_required_above_cents)} limit for orders without your OK.` });
     }
     if (policy.per_order_limit_cents != null && total > policy.per_order_limit_cents) {
-      reasons.push({ code: 'per_order_limit', message: `Order total ${total} exceeds per-order limit ${policy.per_order_limit_cents}.` });
+      reasons.push({ code: 'per_order_limit', message: `${usd(total)} is over the ${usd(policy.per_order_limit_cents)} per-order limit.` });
     }
     const spent = this.#monthSpend(account.id, dateOf(account.clock));
     if (policy.monthly_limit_cents != null && spent + total > policy.monthly_limit_cents) {
-      reasons.push({ code: 'monthly_limit', message: `This order would bring monthly spend to ${spent + total}, over the limit of ${policy.monthly_limit_cents}.` });
+      reasons.push({ code: 'monthly_limit', message: `It would bring this month's spending to ${usd(spent + total)}, over the ${usd(policy.monthly_limit_cents)} monthly limit.` });
     }
     if (policy.allowed_categories) {
       const bad = [...new Set(lines.map((l) => l.category).filter((c) => !policy.allowed_categories.includes(c)))];
-      if (bad.length) reasons.push({ code: 'category_not_allowed', message: `Categories not allowed by policy: ${bad.join(', ')}.` });
+      if (bad.length) reasons.push({ code: 'category_not_allowed', message: `${bad.map((c) => CATEGORIES.find((x) => x.id === c)?.name ?? c).join(' and ')} ${bad.length > 1 ? 'are' : 'is'} not on the list of allowed aisles.` });
     }
     return reasons;
   }
@@ -947,7 +947,8 @@ export class Store {
     if (!a || !a.token_hash || !token || !safeEqual(a.token_hash, hash(String(token)))) return null;
     const auth = { accountId: a.account_id, role: 'owner' };
     const order = this.getOrder(auth, a.order_id);
-    return { approval: this.#presentApproval(a), order, ship_to: this.#presentAddress(this.#address(a.account_id, order.address_id)), account: this.#account(a.account_id).name };
+    const acct = this.getAccount(a.account_id);
+    return { approval: this.#presentApproval(a), order, ship_to: this.#presentAddress(this.#address(a.account_id, order.address_id)), account: acct.name, spend: acct.spend, policy: acct.policy };
   }
 
   /** The agent can take back an order it asked the owner to approve. It can never approve one. */

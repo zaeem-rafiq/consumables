@@ -95,6 +95,9 @@ input:focus, select:focus, textarea:focus { border-color: var(--ink); outline: n
 .kv dd { margin: 0; color: var(--ink); overflow-wrap: anywhere; }
 .lines { width: 100%; border-collapse: collapse; font-variant-numeric: tabular-nums; }
 .lines td, .lines th { padding: 0.625rem 0; border-bottom: 1px solid var(--rule); text-align: left; vertical-align: top; }
+.lines td { overflow-wrap: anywhere; }
+.lines th + th, .lines td + td { padding-left: var(--s3); }
+.lines .sub { display: block; font-size: 0.8125rem; color: var(--muted); }
 .lines th { font: 600 0.8125rem/1.3 var(--body); color: var(--muted); text-transform: uppercase; letter-spacing: 0.04em; }
 .lines .num { text-align: right; padding-left: var(--s4); white-space: nowrap; }
 .lines tr.total td { border-bottom: 0; font-weight: 700; color: var(--ink); padding-top: var(--s3); }
@@ -124,6 +127,63 @@ input:focus, select:focus, textarea:focus { border-color: var(--ink); outline: n
 .prose strong { color: var(--ink); }
 mark.blank { background: var(--warn-bg); color: var(--ink); padding: 0 0.25rem; border-radius: 2px; outline: 1px dashed #b89a00; }
 
+/* the owner's approval card (Figma: "Owner approval card") */
+.owner { background: var(--surface); border: 2px solid var(--ink); border-radius: var(--radius); padding: var(--s5); display: grid; gap: var(--s4); align-content: start; min-width: 0; }
+.owner__eyebrow { font: 600 0.6875rem/1 var(--body); letter-spacing: 0.08em; text-transform: uppercase; color: var(--muted); }
+.owner__title { font: 900 2.25rem/0.95 var(--display); text-transform: uppercase; color: var(--stop); }
+.owner__title--done { color: var(--go); }
+.owner__title--quiet { color: var(--muted); }
+.owner__items { list-style: none; margin: 0; padding: 0; border-top: 1px solid var(--rule); }
+.owner__items li { display: flex; justify-content: space-between; gap: var(--s4); padding-block: 0.5rem; border-bottom: 1px solid var(--rule); color: var(--ink); font-weight: 600; }
+.owner__items li span:last-child { font-weight: 500; color: var(--ink-2); font-variant-numeric: tabular-nums; white-space: nowrap; }
+.owner__amount { font: 900 3.25rem/0.9 var(--display); color: var(--ink); font-variant-numeric: tabular-nums; }
+.owner__note { font-size: 0.875rem; color: var(--muted); }
+.why { list-style: none; margin: 0; padding: 0; display: grid; gap: 0.375rem; }
+.why li { display: grid; grid-template-columns: 10px minmax(0, 1fr); gap: 0.625rem; align-items: baseline; color: var(--ink-2); font-size: 0.9375rem; }
+.why li::before { content: ""; width: 10px; height: 10px; background: var(--stop); transform: translateY(1px); }
+.owner__actions { display: grid; grid-template-columns: 1fr 1fr; gap: var(--s2); }
+.owner__actions form, .owner__actions .btn { width: 100%; }
+.meter { display: grid; gap: 6px; }
+.meter__row { display: flex; justify-content: space-between; gap: var(--s3); font-size: 0.8125rem; color: var(--muted); }
+.meter__row b { font: 500 0.75rem/1.6 var(--mono); color: var(--ink); white-space: nowrap; }
+.meter__track { display: flex; height: 8px; background: var(--rule); border-radius: 2px; overflow: hidden; }
+.meter__track i { display: block; height: 100%; background: var(--ink); }
+.meter__track i.add { background: repeating-linear-gradient(-45deg, var(--stop) 0 3px, transparent 3px 6px); }
+.meter__track i.over { background: var(--stop); }
+
+/* owner page */
+.hh { display: grid; gap: var(--s2); }
+.signage { display: grid; gap: var(--s5); grid-template-columns: minmax(0, 1fr); }
+@media (min-width: 760px) { .signage { grid-template-columns: repeat(3, minmax(0, 1fr)); gap: var(--s6); } }
+.sign { display: grid; gap: var(--s2); align-content: start; min-width: 0; }
+.sign__label { font: 600 0.75rem/1 var(--body); letter-spacing: 0.08em; text-transform: uppercase; color: var(--muted); }
+.sign__big { font: 900 clamp(2.75rem, 6vw, 3.5rem)/0.9 var(--display); color: var(--ink); font-variant-numeric: tabular-nums; border-bottom: 4px solid var(--ink); padding-bottom: var(--s3); overflow-wrap: anywhere; }
+.sign__big--quiet { color: var(--muted); border-bottom-color: var(--rule); }
+.sign p { font-size: 0.9375rem; }
+.cards { display: grid; gap: var(--s4); grid-template-columns: minmax(0, 1fr); }
+@media (min-width: 760px) { .cards { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+.sched { list-style: none; margin: 0; padding: 0; border-top: 2px solid var(--ink); }
+.sched li { display: grid; grid-template-columns: 5.5rem minmax(0, 1fr) auto; gap: var(--s2) var(--s5); align-items: baseline; padding-block: var(--s4); border-bottom: 1px solid var(--rule); }
+.sched__date { font: 800 1.375rem/1 var(--display); text-transform: uppercase; color: var(--ink); font-variant-numeric: tabular-nums; }
+.sched__what { color: var(--ink); font-weight: 600; min-width: 0; }
+.sched__what span { display: block; font-weight: 400; font-size: 0.875rem; color: var(--muted); }
+.sched__amt { font-variant-numeric: tabular-nums; color: var(--ink); text-align: right; white-space: nowrap; }
+@media (max-width: 559px) { .sched li { grid-template-columns: 4.5rem minmax(0, 1fr); } .sched__amt { grid-column: 2; text-align: left; } }
+.settings { display: grid; gap: var(--s4); grid-template-columns: minmax(0, 1fr); align-items: start; }
+@media (min-width: 860px) { .settings { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+.settings .panel + .panel { margin-top: 0; }
+.panel > h3 { font: 700 1.0625rem/1.3 var(--body); margin-bottom: var(--s3); }
+.hint { font-size: 0.8125rem; font-weight: 400; color: var(--muted); }
+.status-line { display: inline-flex; align-items: center; gap: 0.5rem; font-size: 0.9375rem; color: var(--ink-2); white-space: nowrap; }
+.status-line i { width: 8px; height: 8px; border-radius: 50%; background: var(--muted); flex: none; }
+.status-line--go i { background: var(--go); } .status-line--warn i { background: var(--tag); outline: 1px solid var(--ink); } .status-line--stop i { background: var(--stop); }
+.table-scroll { overflow-x: auto; }
+
+/* message pages */
+.eyebrow { display: inline-flex; align-items: center; gap: 0.625rem; font: 600 0.75rem/1 var(--body); letter-spacing: 0.08em; text-transform: uppercase; color: var(--muted); }
+.eyebrow i { width: 12px; height: 12px; background: var(--ink); }
+.eyebrow--go i { background: var(--go); } .eyebrow--stop i { background: var(--stop); } .eyebrow--warn i { background: var(--tag); outline: 1.5px solid var(--ink); outline-offset: -1.5px; }
+
 .foot { border-top: 1px solid var(--rule); padding-block: var(--s6) var(--s8); font-size: 0.9375rem; color: var(--muted); }
 .foot .wrap { display: flex; flex-wrap: wrap; gap: var(--s3) var(--s5); justify-content: space-between; }
 .foot nav { display: flex; flex-wrap: wrap; gap: var(--s3) var(--s5); }
@@ -151,12 +211,28 @@ ${robots ? '' : '<meta name="robots" content="noindex">'}
 }
 
 /** A simple page with one message and an optional action. */
+const TONES = { go: 'Done', stop: 'Something went wrong', warn: 'Waiting' };
+
+/** A simple page with one message and an optional action. tone: go | stop | warn. */
 export function messagePage(title, message, { action, tone } = {}) {
   return layout(title, `<div class="stack">
+    ${TONES[tone] ? `<p class="eyebrow eyebrow--${tone}"><i aria-hidden="true"></i>${TONES[tone]}</p>` : ''}
     <h1 class="title">${esc(title)}</h1>
     <p class="lede">${esc(message)}</p>
-    ${tone ? '' : ''}${action ? `<div class="actions"><a class="btn btn--primary" href="${esc(action.href)}">${esc(action.label)}</a></div>` : ''}
+    ${action ? `<div class="actions"><a class="btn btn--primary" href="${esc(action.href)}">${esc(action.label)}</a></div>` : ''}
   </div>`, { robots: false });
+}
+
+/** "Oct 22" from an ISO date or timestamp. */
+export const day = (iso) => (iso ? new Date(`${String(iso).slice(0, 10)}T00:00:00Z`).toLocaleDateString('en-US', { month: 'short', day: 'numeric', timeZone: 'UTC' }) : '');
+
+/** Month-to-date spending against the monthly limit; `adding` shows a pending order on top. */
+export function meter({ label, spentCents, limitCents, addingCents = 0 }) {
+  if (limitCents == null) return `<div class="meter"><div class="meter__row"><span>${esc(label)}</span><b>${usd(spentCents)} spent, no monthly limit</b></div></div>`;
+  const w = (c) => Math.max(0, Math.min(100, (c / Math.max(1, limitCents)) * 100));
+  const over = spentCents + addingCents > limitCents;
+  return `<div class="meter"><div class="meter__row"><span>${esc(label)}</span><b>${usd(spentCents + addingCents)} of ${usd(limitCents)}${addingCents ? ' with this order' : ''}</b></div>
+    <div class="meter__track" role="img" aria-label="${esc(`${usd(spentCents)} spent of ${usd(limitCents)} this month`)}"><i${over && !addingCents ? ' class="over"' : ''} style="width:${w(spentCents).toFixed(1)}%"></i>${addingCents ? `<i class="add" style="width:${w(addingCents).toFixed(1)}%"></i>` : ''}</div></div>`;
 }
 
 /**
