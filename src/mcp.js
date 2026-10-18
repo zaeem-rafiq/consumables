@@ -11,10 +11,10 @@ const subId = z.string().describe('Subscription id (sub_...)');
 const date = z.string().regex(/^\d{4}-\d{2}-\d{2}$/).describe('Date as YYYY-MM-DD, in the account clock');
 const idemKey = z.string().max(255).optional().describe('Optional. Reuse the same key when retrying so the action runs at most once.');
 
-const INSTRUCTIONS = `Domaru sells everyday household supplies (toilet paper, paper towels, dish soap, trash bags, detergent...) on subscription, built for agents.
-Typical flow: recommend_bundle -> quote -> create_subscription. Then manage with update_subscription, pause_subscription, skip_next_delivery, ship_now, report_supply_level and cancel_subscription.
+const instructions = (base) => `Domaru sells everyday household supplies (toilet paper, paper towels, dish soap, trash bags, detergent...) on subscription, built for agents.
+Typical flow: recommend_bundle -> quote -> create_subscription (recommend_bundle returns a plan of one to four deliveries, from frequent to slow for long-lasting items; create one subscription per plan entry so every item is covered). Then manage with update_subscription, pause_subscription, skip_next_delivery, ship_now, report_supply_level and cancel_subscription.
 Prices are integer cents (USD). Subscriptions get 5% off; orders of $35+ after discount ship free.
-Spend policy is set by the human owner. Orders over policy are held with status "requires_approval"; tell the human, do not retry. Agents cannot approve orders or raise limits.
+Spend policy is set by the household's owner. An order outside it is still placed, but held with status "requires_approval": the owner gets an email with Approve and Decline buttons, and nothing is charged unless they approve. Tell the human it is waiting for the owner; do not retry, and never split it into smaller orders to stay under the limits. You cannot approve orders or change limits. The owner changes limits by signing in at ${base}/owner with their email (no password; Domaru emails a link).
 Households connect Domaru from their assistant (Connect / sign in), which sets up the address, card and limits; you then shop within those limits. Developers without an account can call create_account (it emails the owner and returns an api_key attached to this session over stdio).
 Problems with a delivery (never arrived, damaged, wrong or missing item): call report_problem; Domaru's team resolves it and you can read back the case. You cannot issue refunds. Before an order is bought from the retailer, cancel_order cancels it with a full refund.
 Cards are the default. After the first delivery arrives, get_account shows bank_payments.offer: tell the human they can switch to bank payments and save 2% on every delivery, and send them the link from create_bank_setup_link.
@@ -26,7 +26,7 @@ Sandbox only: advance_test_clock moves time forward to simulate renewals and del
  * @param {{ attachKeyOnSignup?: boolean }} opts
  */
 export function buildMcpServer(store, session, { attachKeyOnSignup = true } = {}) {
-  const server = new McpServer({ name: 'domaru', version: '0.1.0' }, { instructions: INSTRUCTIONS });
+  const server = new McpServer({ name: 'domaru', version: '0.1.0' }, { instructions: instructions(store.publicUrl) });
 
   const auth = () => store.authenticate(session.apiKey);
   const ok = (data) => ({ content: [{ type: 'text', text: JSON.stringify(data, null, 2) }] });
@@ -68,7 +68,7 @@ export function buildMcpServer(store, session, { attachKeyOnSignup = true } = {}
 
   tool('recommend_bundle', {
     title: 'Recommend a bundle',
-    description: 'Suggest quantities for a recurring delivery based on household size and cadence. Without skus, returns a starter bundle of everyday essentials.',
+    description: 'Suggest quantities for recurring deliveries based on household size and cadence. Returns plan: one to four deliveries (each with items and cadence_days), so long-lasting items come less often. Create one subscription per plan entry. order_once lists anything that fits no schedule (offer it as a one-time order). Without skus, plans a starter set of everyday essentials.',
     readOnly: true,
     input: {
       household_size: z.number().int().min(1).max(20).optional().describe('People in the household; defaults to the account value'),
@@ -109,7 +109,7 @@ export function buildMcpServer(store, session, { attachKeyOnSignup = true } = {}
 
   tool('update_household', {
     title: 'Update household',
-    description: 'Change household size (used for recommendations).',
+    description: 'Change the household size. Domaru sizes recommendations and supply checks to it, and the response lists subscriptions that no longer fit, each with a ready suggested_update. If someone joins or leaves before the next delivery (including one that resumes after a pause), update it now and apply the suggested updates, so that delivery is sized right: you may not get another chance to check in first.',
     input: { household_size: z.number().int().min(1).max(20) },
   }, ({ household_size }) => store.updateAccount(auth(), { household_size }));
 
@@ -133,10 +133,10 @@ export function buildMcpServer(store, session, { attachKeyOnSignup = true } = {}
 
   tool('add_address', {
     title: 'Add shipping address',
-    description: 'Add a US shipping address.',
+    description: 'Add a US shipping address. It does not replace the home address unless set_default is true: leave set_default out for a gift or one-off (pass address_id on that order), set it true when the household moves. The first address on an account becomes the default either way.',
     input: {
       name: z.string(), line1: z.string(), line2: z.string().optional(), city: z.string(), region: z.string().describe('State, e.g. NY'),
-      postal_code: z.string(), phone: z.string().optional().describe('Recipient phone for the delivery carrier (recommended)'), set_default: z.boolean().default(true),
+      postal_code: z.string(), phone: z.string().optional().describe('Recipient phone for the delivery carrier (recommended)'), set_default: z.boolean().default(false).describe('true only when this becomes the home address for future deliveries (a move)'),
     },
   }, (args) => store.addAddress(auth(), args));
 
@@ -145,7 +145,7 @@ export function buildMcpServer(store, session, { attachKeyOnSignup = true } = {}
   // ---- pricing
   tool('quote', {
     title: 'Quote',
-    description: 'Price a basket exactly as it would be charged, and say whether spend policy would hold it for human approval. Nothing is charged.',
+    description: 'Price a basket exactly as it would be charged, and say whether spend policy would hold it for human approval. Also lists any of these items already on the way or due from a subscription within a week (already_coming). Nothing is charged.',
     readOnly: true,
     input: { items, subscription: z.boolean().default(true), cadence_days: z.number().int().min(7).max(180).optional() },
   }, (args) => store.quote(auth(), args));
@@ -187,8 +187,11 @@ export function buildMcpServer(store, session, { attachKeyOnSignup = true } = {}
   tool('resume_subscription', { title: 'Resume subscription', description: 'Resume a paused subscription. If an order was due during the pause it ships today.', input: { subscription_id: subId } },
     ({ subscription_id }) => store.resumeSubscription(auth(), subscription_id));
 
-  tool('skip_next_delivery', { title: 'Skip next delivery', description: 'Push the next order back by one cadence.', input: { subscription_id: subId } },
-    ({ subscription_id }) => store.skipNext(auth(), subscription_id));
+  tool('skip_next_delivery', {
+    title: 'Skip next delivery',
+    description: 'Skip the next delivery (pushes it back one cadence). With skus, skip only those items in the next delivery: the rest still ships on time and the skipped items come back in the delivery after. To stop an item for good, use update_subscription to remove it.',
+    input: { subscription_id: subId, skus: z.array(z.string()).optional().describe('Skip only these items, next delivery only') },
+  }, ({ subscription_id, skus }) => store.skipNext(auth(), subscription_id, { skus }));
 
   tool('ship_now', { title: 'Ship now', description: 'Place the next order today and restart the cadence from today.', input: { subscription_id: subId } },
     ({ subscription_id }) => store.shipNow(auth(), subscription_id));
@@ -206,7 +209,7 @@ export function buildMcpServer(store, session, { attachKeyOnSignup = true } = {}
 
   // ---- orders
   tool('place_order', {
-    title: 'Place one-time order', description: 'Buy once, no subscription (no subscription discount).',
+    title: 'Place one-time order', description: 'Buy once, no subscription (no subscription discount). Quote first: if the quote shows already_coming, tell the household what is already on the way and when, and only buy more if they clearly need it sooner or need more.',
     input: { items, address_id: z.string().optional(), payment_method_id: z.string().optional(), idempotency_key: idemKey },
   }, (args) => idem(args, 'place_order', (a, rest) => store.createOrder(a, rest)));
 

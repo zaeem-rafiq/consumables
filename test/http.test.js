@@ -51,7 +51,7 @@ test('end-to-end agent flow over HTTP', async () => {
   const rec = await call('POST', '/v1/recommendations', { key, body: { skus: ['TP-2PLY-30', 'PT-2PLY-12', 'DW-PODS-115'] } });
   assert.equal(rec.body.household_size, 3);
 
-  const items = rec.body.items.map(({ sku, quantity }) => ({ sku, quantity }));
+  const items = rec.body.plan[0].items.map(({ sku, quantity }) => ({ sku, quantity }));
   const idem = { 'idempotency-key': 'create-1' };
   const sub = await call('POST', '/v1/subscriptions', { key, body: { items, cadence_days: 28 }, headers: idem });
   assert.equal(sub.status, 201);

@@ -6,6 +6,7 @@
 // supermarket shelf-edge label plus a live look at the trust layer: the agent's
 // own calls on the left, the owner's approval card on the right.
 
+import { FONT_HEAD } from './ui.js';
 import { PRODUCTS, presentProduct, monthlyUsage, baseUnitsPerPack } from './catalog.js';
 
 const esc = (v) => String(v ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]);
@@ -213,7 +214,9 @@ footer { padding-block: var(--s8) var(--s10); display: grid; gap: var(--s5); }
 .agent-note { font: 400 0.8125rem/1.6 var(--mono); color: var(--muted); max-width: 82ch; }
 `;
 
-const FONTS = 'https://fonts.googleapis.com/css2?family=Barlow+Condensed:wght@800;900&family=Barlow:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;700&display=swap';
+// Only the static preview (published outside the store) loads Google Fonts;
+// the live store serves its own copies via FONT_HEAD.
+const PREVIEW_FONTS = 'https://fonts.googleapis.com/css2?family=Barlow+Condensed:wght@800;900&family=Barlow:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;700&display=swap';
 
 const SCRIPT = `
 (() => {
@@ -296,10 +299,10 @@ export function landingBody({ base = '' } = {}) {
     </div>
 
     <section class="section" id="limits">
-      <div class="head"><h2 class="display">Your agent's limits, in three numbers</h2><p>Your agent gets one key and you get another. Our server checks these on every order, whatever the agent says.</p></div>
+      <div class="head"><h2 class="display">Your agent's limits, in three numbers</h2><p>You set them when you connect your agent. Our server checks them on every order, whatever the agent says.</p></div>
       <div class="numbers">
         <div class="num"><p class="num__big">$150</p><h3>It can't overspend.</h3><p>Set a per-order cap, a monthly budget and the aisles it may shop. Anything outside them waits for you.</p></div>
-        <div class="num"><p class="num__big num__big--stop">0</p><h3>Orders it can approve itself.</h3><p>Approving a held order or raising a limit needs your key. The agent's key can't, so there is nothing to talk it into.</p></div>
+        <div class="num"><p class="num__big num__big--stop">0</p><h3>Orders it can approve itself.</h3><p>Held orders wait for you to tap Approve in an email, and only you can raise a limit. Your agent can't do either, so there is nothing to talk it into.</p></div>
         <div class="num"><p class="num__big">$0.00</p><h3>Between quote and charge.</h3><p>The price your agent is quoted is the price you're charged. Every box, skip and change is in a log you can both read.</p></div>
       </div>
     </section>
@@ -364,8 +367,7 @@ export function landingPage({ base = '' } = {}) {
 <title>Domaru</title>
 <meta name="description" content="Your AI agent keeps the house stocked. You set the limits. It can't overspend.">
 <link rel="alternate" type="text/markdown" href="${esc(base)}/llms.txt">
-<link rel="preconnect" href="https://fonts.googleapis.com"><link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<link rel="stylesheet" href="${FONTS}">
+${FONT_HEAD}
 <style>${STYLE}</style></head><body>${landingBody({ base })}</body></html>`;
 }
 
@@ -373,7 +375,7 @@ export function landingPage({ base = '' } = {}) {
 export function landingPreview({ base = 'https://domaru.app' } = {}) {
   return `<title>Domaru</title>
 <meta name="claude:viewport-fit-sides" content="cover">
-<link rel="stylesheet" href="${FONTS}">
+<link rel="stylesheet" href="${PREVIEW_FONTS}">
 <style>${STYLE}</style>
 ${landingBody({ base })}`;
 }

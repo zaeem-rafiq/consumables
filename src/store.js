@@ -2,6 +2,7 @@
 // behavior (pricing, spend policy, billing, fulfillment) is identical across
 // surfaces.
 
+import { renderEmail } from './email-html.js';
 import { createHash, randomBytes, timingSafeEqual } from 'node:crypto';
 import { openDb } from './db.js';
 import { PRODUCTS, CATEGORIES, presentProduct, baseUnitsPerPack, monthlyUsage } from './catalog.js';
@@ -446,12 +447,27 @@ export class Store {
     }
     this.db.prepare('UPDATE accounts SET household_size = ?, name = ?, email = ? WHERE id = ?')
       .run(household_size ?? a.household_size, name ?? a.name, email ?? a.email, a.id);
-    return this.getAccount(a.id);
+    const out = this.getAccount(a.id);
+    if (household_size != null && household_size !== a.household_size) {
+      // Deliveries were sized for the old household; say which no longer fit.
+      const checks = this.db.prepare("SELECT * FROM subscriptions WHERE account_id = ? AND status != 'canceled'").all(a.id)
+        .map((x) => this.#presentSub(x)).filter((x) => x.supply_check).map((x) => {
+          // The smallest change that keeps them stocked: more packs of what runs short, same schedule.
+          const items = x.items.map((i) => ({
+            sku: i.sku,
+            quantity: i.lasts_days && i.lasts_days < x.cadence_days * 0.98 ? Math.ceil((i.quantity * x.cadence_days) / i.lasts_days - 0.01) : i.quantity,
+          }));
+          return { subscription_id: x.id, supply_check: x.supply_check, suggested_update: { subscription_id: x.id, items } };
+        });
+      out.subscriptions_to_adjust = checks.length ? checks : 'Existing subscriptions still fit this household.';
+      if (checks.length) out.next_step = 'The household told you it changed size, so keeping them stocked at the new size is part of what they asked. Apply each suggested_update with update_subscription (or PATCH the subscription) unless it would go over their limits, then tell them what changed and the new cost.';
+    }
+    return out;
   }
 
   updatePolicy(auth, patch) {
     if (auth.role !== 'owner') {
-      throw forbidden('Only the account owner can change spend policy.', 'Ask the human to change it with their owner_key. Agents cannot raise their own limits.');
+      throw forbidden('Only the account owner can change spend policy.', `The owner changes limits by signing in at ${this.publicUrl}/owner. Agents cannot raise their own limits.`);
     }
     const a = this.#account(auth.accountId);
     const merged = this.#validatePolicy({ ...p(a.policy_json), ...patch });
@@ -568,7 +584,7 @@ export class Store {
     return x;
   }
 
-  addAddress(auth, { name, line1, line2, city, region, postal_code, phone, country = 'US', set_default = true } = {}) {
+  addAddress(auth, { name, line1, line2, city, region, postal_code, phone, country = 'US', set_default = false } = {}) {
     for (const [k, v] of Object.entries({ name, line1, city, region, postal_code })) {
       if (!v || typeof v !== 'string') throw badRequest('missing_param', `${k} is required.`, { param: k });
     }
@@ -658,21 +674,21 @@ export class Store {
     const reasons = [];
     const addr = addrId ? this.db.prepare('SELECT confirmed FROM addresses WHERE id = ?').get(addrId) : null;
     if (addr && !addr.confirmed) {
-      reasons.push({ code: 'new_address', message: 'First order to an address the owner has not confirmed yet.' });
+      reasons.push({ code: 'new_address', message: 'This is the first order to a new delivery address.' });
     }
     if (policy.approval_required_above_cents != null && total > policy.approval_required_above_cents) {
-      reasons.push({ code: 'above_approval_threshold', message: `Order total ${total} exceeds approval threshold ${policy.approval_required_above_cents}.` });
+      reasons.push({ code: 'above_approval_threshold', message: `${usd(total)} is over the ${usd(policy.approval_required_above_cents)} limit for orders without your OK.` });
     }
     if (policy.per_order_limit_cents != null && total > policy.per_order_limit_cents) {
-      reasons.push({ code: 'per_order_limit', message: `Order total ${total} exceeds per-order limit ${policy.per_order_limit_cents}.` });
+      reasons.push({ code: 'per_order_limit', message: `${usd(total)} is over the ${usd(policy.per_order_limit_cents)} per-order limit.` });
     }
     const spent = this.#monthSpend(account.id, dateOf(account.clock));
     if (policy.monthly_limit_cents != null && spent + total > policy.monthly_limit_cents) {
-      reasons.push({ code: 'monthly_limit', message: `This order would bring monthly spend to ${spent + total}, over the limit of ${policy.monthly_limit_cents}.` });
+      reasons.push({ code: 'monthly_limit', message: `It would bring this month's spending to ${usd(spent + total)}, over the ${usd(policy.monthly_limit_cents)} monthly limit.` });
     }
     if (policy.allowed_categories) {
       const bad = [...new Set(lines.map((l) => l.category).filter((c) => !policy.allowed_categories.includes(c)))];
-      if (bad.length) reasons.push({ code: 'category_not_allowed', message: `Categories not allowed by policy: ${bad.join(', ')}.` });
+      if (bad.length) reasons.push({ code: 'category_not_allowed', message: `${bad.map((c) => CATEGORIES.find((x) => x.id === c)?.name ?? c).join(' and ')} ${bad.length > 1 ? 'are' : 'is'} not on the list of allowed aisles.` });
     }
     return reasons;
   }
@@ -686,13 +702,43 @@ export class Store {
     const out = {
       ...priced,
       subscription,
-      policy: { would_require_approval: reasons.length > 0, reasons },
+      policy: {
+        would_require_approval: reasons.length > 0,
+        reasons,
+        ...(reasons.length ? { what_happens: "Placing it holds the order for the account owner, who gets an email with Approve and Decline buttons. Nothing is charged unless they approve, and the owner can approve it even if it is over a limit. Place it if the household asked for it, then tell them it is waiting for the owner. Don't split it into smaller orders to stay under the limits." } : {}),
+      },
       valid_until: addDays(dateOf(account.clock), 1),
     };
+    const coming = this.#alreadyComing(account, norm.map((i) => i.sku));
+    if (coming.length) out.already_coming = { items: coming, note: 'Some of these are already on the way or due soon. Tell the household before ordering more, so they are not bought twice.' };
     if (subscription && cadence_days) {
       this.#validateCadence(cadence_days);
       out.cadence_days = cadence_days;
       out.estimated_monthly_cents = Math.round((priced.amounts.total_cents * 30) / cadence_days);
+    }
+    return out;
+  }
+
+  /** Items in skus that are already on the way, or due from a subscription within a week. */
+  #alreadyComing(account, skus) {
+    const want = new Set(skus);
+    const today = dateOf(account.clock);
+    const out = [];
+    const open = this.db.prepare(`SELECT o.id, o.status, o.lines_json, o.subscription_id, s.status AS ship_status, s.estimated_delivery_date
+      FROM orders o LEFT JOIN shipments s ON s.order_id = o.id
+      WHERE o.account_id = ? AND o.status IN ('paid', 'payment_pending', 'requires_approval') AND (s.status IS NULL OR s.status NOT IN ('delivered', 'canceled'))`).all(account.id);
+    for (const o of open) {
+      for (const l of p(o.lines_json)) {
+        if (!want.has(l.sku)) continue;
+        out.push({ sku: l.sku, name: l.name, quantity: l.quantity, order_id: o.id, from_subscription: o.subscription_id ?? null,
+          ...(o.status === 'requires_approval' ? { status: 'waiting for the owner to approve' } : { status: 'on the way', estimated_arrival_date: o.estimated_delivery_date ?? null }) });
+      }
+    }
+    const soon = this.db.prepare("SELECT * FROM subscriptions WHERE account_id = ? AND status = 'active' AND next_order_date <= ?").all(account.id, addDays(today, 7));
+    for (const sub of soon) {
+      for (const l of p(sub.items_json)) {
+        if (want.has(l.sku)) out.push({ sku: l.sku, quantity: l.quantity, subscription_id: sub.id, status: 'next subscription delivery', order_date: sub.next_order_date, estimated_arrival_date: addDays(sub.next_order_date, this.fulfillment === 'mock' ? 3 : 5) });
+      }
     }
     return out;
   }
@@ -705,26 +751,86 @@ export class Store {
     if (!Number.isInteger(people) || people < 1 || people > 20) throw badRequest('invalid_param', 'household_size must be an integer from 1 to 20.', { param: 'household_size' });
     this.#validateCadence(cadence_days);
     const chosen = skus?.length ? skus : STARTER_SKUS;
-    const items = chosen.map((sku) => {
+    const usage = chosen.map((sku) => {
       const prod = this.products.get(sku);
       if (!prod) throw this.#unknownSku(sku);
       const perDay = monthlyUsage(prod, people) / 30;
-      const perPack = baseUnitsPerPack(prod);
-      const quantity = Math.max(1, Math.round((perDay * cadence_days) / perPack));
+      return { prod, perDay, packDays: perDay > 0 ? baseUnitsPerPack(prod) / perDay : Infinity };
+    });
+    // One pack of some things (dish soap, toothpaste) lasts months. Sending those
+    // on the main cadence piles them up, so they go on slower deliveries. Every
+    // item must pass the same supply check subscriptions report: each delivery
+    // lasts at least one cadence and at most 1.25 (the extra adds up over months). Slower
+    // deliveries use the whole-week cadence (up to 180 days) that fits the most
+    // remaining items; at most four deliveries. Anything that fits none (a pack
+    // that outlasts the slowest delivery) is suggested as a one-time order.
+    const qty = (u, c) => Math.max(1, Math.ceil(c / u.packDays - 0.01));
+    const fits = (u, c) => qty(u, c) * u.packDays <= c * 1.25;
+    const policy = account ? p(account.policy_json) : {};
+    const caps = [policy.approval_required_above_cents, policy.per_order_limit_cents].filter((x) => x != null);
+    const cap = caps.length ? Math.min(...caps) : null;
+    const groups = [{ cadence_days, rows: usage.filter((u) => fits(u, cadence_days)) }];
+    let rest = usage.filter((u) => !fits(u, cadence_days));
+    while (rest.length && groups.filter((g) => g.rows.length).length < (rest.some((u) => u.packDays <= 180 * 1.25) ? 4 : 3)) {
+      // Timed to the fastest-running item left: one pack of it per delivery.
+      const first = rest.reduce((x, y) => (x.packDays <= y.packDays ? x : y));
+      let best = null;
+      for (let c = 7; c <= 180; c += 7) {
+        if (c <= (groups.filter((g) => g.rows.length).at(-1)?.cadence_days ?? 0) || !fits(first, c) || qty(first, c) > Math.max(2, Math.ceil(28 / first.packDays))) continue;
+        const rows = rest.filter((u) => fits(u, c));
+        // A delivery the owner has to approve every time is worse than one more box.
+        const over = cap != null && this.price(rows.map((u) => ({ sku: u.prod.sku, quantity: qty(u, c) })), { subscription: true }).amounts.total_cents > cap;
+        // Most items wins; on a tie, the least extra stock per delivery.
+        const waste = rows.reduce((sum, u) => sum + (qty(u, c) * u.packDays) / c - 1, 0);
+        if (!best || (best.over && !over) || (best.over === over && (rows.length > best.rows.length || (rows.length === best.rows.length && waste < best.waste)))) best = { cadence_days: c, rows, over, waste };
+      }
+      const exact = Math.min(180, Math.max(7, Math.floor(first.packDays)));
+      if (!best && fits(first, exact)) best = { cadence_days: exact, rows: rest.filter((u) => fits(u, exact)) };
+      if (!best) break;
+      // A fourth box only earns its place if it ships free; otherwise it's a one-time add.
+      const fourth = groups.filter((g) => g.rows.length).length === 3;
+      if (fourth && this.price(best.rows.map((u) => ({ sku: u.prod.sku, quantity: qty(u, best.cadence_days) })), { subscription: true }).amounts.shipping_cents > 0) break;
+      groups.push(best);
+      rest = rest.filter((u) => !best.rows.includes(u));
+    }
+    const once = rest.map(({ prod, packDays }) => ({
+      sku: prod.sku, name: prod.name, quantity: 1, lasts_days: Number.isFinite(packDays) ? Math.round(packDays) : null,
+      note: packDays > 180 * 1.25
+        ? `One pack lasts about ${Math.round(packDays)} days, longer than any delivery schedule. Add it to a one-time order now and again when it runs low.`
+        : `One pack lasts about ${Math.round(packDays)} days and doesn't fit these delivery schedules without running short or piling up. Offer it as a one-time order; a subscription of its own would mostly pay for shipping.`,
+    }));
+    const nonEmpty = groups.filter((g) => g.rows.length);
+    const plan = nonEmpty.map((g) => {
+      const items = g.rows.map(({ prod, perDay }) => {
+        const perPack = baseUnitsPerPack(prod);
+        // Round up: a delivery that runs out before the next one is worse than a
+        // few spare rolls; even a small shortfall adds up over months.
+        const quantity = Math.max(1, Math.ceil((perDay * g.cadence_days) / perPack - 0.01));
+        return {
+          sku: prod.sku, name: prod.name, quantity,
+          days_of_supply: perDay > 0 ? Math.round((quantity * perPack) / perDay) : null,
+          estimated_monthly_usage: { amount: Math.round(monthlyUsage(prod, people) * 10) / 10, unit: prod.pack.base_unit ?? prod.pack.unit },
+        };
+      });
+      const priced = this.price(items, { subscription: true });
       return {
-        sku, name: prod.name, quantity,
-        days_of_supply: perDay > 0 ? Math.round((quantity * perPack) / perDay) : null,
-        estimated_monthly_usage: { amount: Math.round(monthlyUsage(prod, people) * 10) / 10, unit: prod.pack.base_unit ?? prod.pack.unit },
+        cadence_days: g.cadence_days,
+        label: g.cadence_days === cadence_days ? 'Runs out often' : 'Lasts longer',
+        items,
+        per_delivery: priced.amounts,
+        estimated_monthly_cents: Math.round((priced.amounts.total_cents * 30) / g.cadence_days),
       };
     });
-    const priced = this.price(items, { subscription: true });
+    const main = plan[0];
     return {
       household_size: people,
-      cadence_days,
-      items: items.map(({ sku, quantity, name, days_of_supply, estimated_monthly_usage }) => ({ sku, name, quantity, days_of_supply, estimated_monthly_usage })),
-      per_delivery: priced.amounts,
-      estimated_monthly_cents: Math.round((priced.amounts.total_cents * 30) / cadence_days),
-      next_step: 'Pass `items` and `cadence_days` to create_subscription (POST /v1/subscriptions). Some items last longer than the cadence; drop them or create a second subscription with a longer cadence.',
+      plan,
+      ...(once.length ? { order_once: once } : {}),
+      estimated_monthly_cents: plan.reduce((sum, d) => sum + d.estimated_monthly_cents, 0),
+      next_step: (plan.length > 1
+        ? `Create one subscription per entry in plan, each with its own items and cadence_days (create_subscription / POST /v1/subscriptions). Later entries hold items that last much longer, so sending them every ${main.cadence_days} days would pile them up.`
+        : 'Pass items and cadence_days to create_subscription (POST /v1/subscriptions).')
+        + (once.length ? ' order_once lists items that fit no delivery schedule here; tell the household and offer a one-time order for them.' : ''),
     };
   }
 
@@ -910,12 +1016,14 @@ export class Store {
     return {
       id: a.id, status: a.status, order_id: a.order_id, amount_cents: a.amount_cents,
       reasons: p(a.reasons_json), created_at: a.created_at, decided_at: a.decided_at,
-      how_to_resolve: a.status === 'pending' ? 'The owner was emailed an Approve / Decline link. Tell them it is waiting. Agents cannot approve.' : undefined,
+      outcome: a.status === 'rejected' ? `Declined by the account owner on ${a.decided_at}. The order was canceled and nothing was charged. Tell the person the owner said no. Don't place it again or split it into smaller orders; if they still want it, they should ask the owner.`
+        : a.status === 'approved' ? `Approved by the account owner on ${a.decided_at}.` : undefined,
+      how_to_resolve: a.status === 'pending' ? `The owner was emailed Approve and Decline buttons. Approving places this order even though it is over their limits; they don't need to change any limit first. They can also approve it after signing in at ${this.publicUrl}/owner. Tell them it is waiting. You cannot approve it.` : undefined,
     };
   }
 
   async decideApproval(auth, approvalId, decision) {
-    if (auth.role !== 'owner') throw forbidden('Only the account owner can approve or reject orders.', 'Tell the human an approval is waiting; they resolve it with their owner_key.');
+    if (auth.role !== 'owner') throw forbidden('Only the account owner can approve or reject orders.', `Tell the human an approval is waiting; they approve it from the email or by signing in at ${this.publicUrl}/owner.`);
     const account = this.#account(auth.accountId);
     const a = this.db.prepare('SELECT * FROM approvals WHERE id = ? AND account_id = ?').get(approvalId, account.id);
     if (!a) throw notFound('approval', approvalId);
@@ -947,7 +1055,8 @@ export class Store {
     if (!a || !a.token_hash || !token || !safeEqual(a.token_hash, hash(String(token)))) return null;
     const auth = { accountId: a.account_id, role: 'owner' };
     const order = this.getOrder(auth, a.order_id);
-    return { approval: this.#presentApproval(a), order, ship_to: this.#presentAddress(this.#address(a.account_id, order.address_id)), account: this.#account(a.account_id).name };
+    const acct = this.getAccount(a.account_id);
+    return { approval: this.#presentApproval(a), order, ship_to: this.#presentAddress(this.#address(a.account_id, order.address_id)), account: acct.name, spend: acct.spend, policy: acct.policy };
   }
 
   /** The agent can take back an order it asked the owner to approve. It can never approve one. */
@@ -1285,15 +1394,22 @@ export class Store {
     const bank = this.db.prepare('SELECT type FROM payment_methods WHERE id = ?').get(s.payment_method_id)?.type === 'bank';
     const priced = this.price(items, { subscription: true, bank });
     const latest = this.db.prepare('SELECT * FROM orders WHERE subscription_id = ? ORDER BY created_at DESC, rowid DESC LIMIT 1').get(s.id);
+    // A paused subscription's next order is whenever it resumes, if that is later.
+    let next = s.status === 'canceled' ? null : s.next_order_date;
+    if (s.status === 'paused') next = s.pause_until ? (s.pause_until > next ? s.pause_until : next) : null;
     return {
       id: s.id,
       status: s.status,
       status_reason: s.status_reason,
-      items: priced.lines.map(({ sku, name, quantity, unit_price_cents }) => ({ sku, name, quantity, unit_price_cents })),
+      items: priced.lines.map(({ sku, name, quantity, unit_price_cents }) => ({ sku, name, quantity, unit_price_cents, lasts_days: this.#lastsDays(s.account_id, sku, quantity) })),
       cadence_days: s.cadence_days,
-      next_order_date: s.status === 'canceled' ? null : s.next_order_date,
-      next_charge_date: s.status === 'canceled' ? null : this.#chargeDate(s.next_order_date, bank),
+      ...this.#supplyNote(s.account_id, priced.lines, s.cadence_days),
+      next_order_date: next,
+      next_charge_date: next && this.#chargeDate(next, bank),
+      estimated_arrival_date: next && addDays(next, this.fulfillment === 'mock' ? 3 : 5),
       pause_until: s.pause_until,
+      ...(p(s.skip_once_json ?? '[]').length ? { skipping_next: { skus: p(s.skip_once_json), note: 'Left out of the next delivery only; they come back in the one after.' } } : {}),
+      ...(s.status === 'paused' ? { resumes: s.pause_until ? `Resumes on ${s.pause_until}; the next order is placed that day.` : 'Paused until someone resumes it (resume_subscription).' } : {}),
       address_id: s.address_id,
       payment_method_id: s.payment_method_id,
       estimated_next_order: priced.amounts,
@@ -1304,6 +1420,31 @@ export class Store {
       updated_at: s.updated_at,
       canceled_at: s.canceled_at,
     };
+  }
+
+  /** Days `quantity` packs of sku last this household, from typical use per person. */
+  #lastsDays(accountId, sku, quantity) {
+    const prod = this.products.get(sku);
+    const people = this.db.prepare('SELECT household_size FROM accounts WHERE id = ?').get(accountId)?.household_size ?? 2;
+    const perDay = prod ? monthlyUsage(prod, people) / 30 : 0;
+    return perDay > 0 ? Math.round((quantity * baseUnitsPerPack(prod)) / perDay) : null;
+  }
+
+  /** A plain warning when a subscription's items run out before the next delivery, or pile up. */
+  #supplyNote(accountId, lines, cadence) {
+    const people = this.db.prepare('SELECT household_size FROM accounts WHERE id = ?').get(accountId)?.household_size ?? 2;
+    const short = []; const piles = [];
+    for (const l of lines) {
+      const d = this.#lastsDays(accountId, l.sku, l.quantity);
+      if (d == null) continue;
+      if (d < cadence * 0.98) short.push(`${l.name} lasts about ${d} days`);
+      else if (d > cadence * 1.3) piles.push(`${l.name} lasts about ${d} days`);
+    }
+    if (!short.length && !piles.length) return {};
+    const parts = [];
+    if (short.length) parts.push(`Runs out before the next delivery (every ${cadence} days) for ${people} people: ${short.join('; ')}. Raise the quantity, shorten cadence_days, or move it to its own faster subscription.`);
+    if (piles.length) parts.push(`Piles up (delivered every ${cadence} days): ${piles.join('; ')}. Consider a slower subscription for it.`);
+    return { supply_check: parts.join(' ') };
   }
 
   #touch(account, subId, fields) {
@@ -1371,10 +1512,19 @@ export class Store {
     this.#emit(account.id, 'subscription.resumed', { subscription_id: s.id });
   }
 
-  skipNext(auth, subId) {
+  skipNext(auth, subId, { skus } = {}) {
     const account = this.#account(auth.accountId);
     const s = this.#sub(account.id, subId);
     this.#requireNotCanceled(s);
+    if (skus?.length) {
+      // Leave just these items out of the next delivery; they come back after it.
+      const have = new Set(p(s.items_json).map((i) => i.sku));
+      const missing = skus.filter((k) => !have.has(k));
+      if (missing.length) throw badRequest('invalid_param', `Not in this subscription: ${missing.join(', ')}.`, { param: 'skus', hint: `It has: ${[...have].join(', ')}.` });
+      this.#touch(account, s.id, { skip_once_json: j([...new Set(skus)]) });
+      this.#emit(account.id, 'subscription.items_skipped', { subscription_id: s.id, order_date: s.next_order_date, skus });
+      return this.getSubscription(auth, s.id);
+    }
     const next = addDays(s.next_order_date, s.cadence_days);
     this.#touch(account, s.id, { next_order_date: next });
     this.#emit(account.id, 'subscription.skipped', { subscription_id: s.id, skipped_date: s.next_order_date, next_order_date: next });
@@ -1462,7 +1612,11 @@ export class Store {
       const claimed = this.db.prepare("UPDATE subscriptions SET next_order_date = ?, updated_at = ? WHERE id = ? AND status = 'active' AND next_order_date = ?")
         .run(addDays(shipOn, s.cadence_days), account.clock, s.id, s.next_order_date);
       if (claimed.changes !== 1) continue;
-      const order = await this.#placeOrder(account, { items: p(s.items_json), addrId: s.address_id, pmId: s.payment_method_id, subscriptionId: s.id, fulfillOn: shipOn });
+      const skip = new Set(p(s.skip_once_json ?? '[]'));
+      const items = p(s.items_json).filter((i) => !skip.has(i.sku));
+      if (skip.size) this.db.prepare("UPDATE subscriptions SET skip_once_json = '[]' WHERE id = ?").run(s.id);
+      if (!items.length) continue; // every item skipped this time: no order
+      const order = await this.#placeOrder(account, { items, addrId: s.address_id, pmId: s.payment_method_id, subscriptionId: s.id, fulfillOn: shipOn });
       this.#syncSubscriptionAfterPayment(this.#account(accountId), order.id);
     }
 
@@ -1553,7 +1707,7 @@ export class Store {
         retailer_order_id: sh.retailer_order_id, retailer_canceled_at: sh.retailer_canceled_at, problem: sh.problem,
         late: !['delivered', 'canceled'].includes(sh.status) && sh.estimated_delivery_date < today,
       },
-      cases: this.db.prepare('SELECT * FROM cases WHERE order_id = ? ORDER BY created_at').all(o.id).map((c) => this.#presentCase(c)),
+      cases: this.db.prepare('SELECT * FROM cases WHERE order_id = ? ORDER BY created_at').all(o.id).map((c) => ({ ...this.#presentCase(c), value_cents: c.value_cents, proof_reason: c.proof_reason, reported_by: c.reported_by })),
       refundable_cents: this.#refundable(o),
     };
   }
@@ -1650,7 +1804,7 @@ export class Store {
         for (const e of this.db.prepare("SELECT * FROM emails WHERE status = 'queued' ORDER BY rowid").all()) {
           let r;
           try {
-            r = await this.mailer.send({ id: e.id, from: this.support.from, replyTo: this.support.email, to: e.to_addr, subject: e.subject, text: e.body });
+            r = await this.mailer.send({ id: e.id, from: this.support.from, replyTo: this.support.email, to: e.to_addr, subject: e.subject, text: e.body, html: renderEmail(e) });
           } catch (err) {
             r = { status: 'failed', error: err.message };
           }

@@ -20,19 +20,19 @@ function routes(store) {
     ['GET', '/v1/categories', 'List product categories', 'none', () => store.listCategories()],
     ['GET', '/v1/products', 'Search products (?q=, ?category=, ?tag=)', 'none', ({ query }) => ({ data: store.listProducts(query) })],
     ['GET', '/v1/products/:sku', 'Get one product', 'none', ({ params }) => store.getProduct(params.sku)],
-    ['POST', '/v1/recommendations', 'Recommend a bundle for a household { household_size, skus?, cadence_days? }', 'optional', ({ auth, body }) => store.recommend(auth, body)],
+    ['POST', '/v1/recommendations', 'Recommend a bundle for a household { household_size, skus?, cadence_days? } -> plan (one to four deliveries; create one subscription each) and order_once (items that fit no schedule)', 'optional', ({ auth, body }) => store.recommend(auth, body)],
 
     ['POST', '/v1/accounts', "Developers: create an account { name, email (the owner's), household_size? } -> api_key. The owner is emailed a sign-in link. Households use Connect Domaru (OAuth) instead", 'none', ({ body }) => store.createAccount(body)],
     ['POST', '/v1/account/owner_invite', "Re-send the owner's sign-in link to the owner email on file", 'agent', ({ auth }) => store.resendOwnerInvite(auth)],
     ['GET', '/v1/account', 'Get the current account, policy and month-to-date spend', 'agent', ({ auth }) => store.getAccount(auth.accountId)],
-    ['PATCH', '/v1/account', 'Update { household_size?, name? } (email: owner only)', 'agent', ({ auth, body }) => store.updateAccount(auth, body)],
+    ['PATCH', '/v1/account', 'Update { household_size?, name? } (email: owner only). A household_size change returns subscriptions_to_adjust with a ready suggested_update for each; if the change happens before the next delivery (even one resuming after a pause), make it now', 'agent', ({ auth, body }) => store.updateAccount(auth, body)],
     ['PATCH', '/v1/account/policy', 'Owner only: update spend policy', 'owner', ({ auth, body }) => store.updatePolicy(auth, body)],
 
     ['POST', '/v1/payment_methods', 'Test mode: add a card or bank account from a token { token } (pm_card_visa, pm_card_declined, pm_usBankAccount_success, ...)', 'agent', ({ auth, body }) => store.addPaymentMethod(auth, body)],
     ['POST', '/v1/payment_methods/setup_link', 'Get a secure page where the human saves a card; send the url to the owner', 'agent', ({ auth }) => store.createCardSetupLink(auth)],
     ['POST', '/v1/payment_methods/bank_setup_link', 'After the first delivery: get a page where the human signs in to their bank to pay by bank and save 2% on every delivery', 'agent', ({ auth }) => store.createBankSetupLink(auth)],
     ['GET', '/v1/payment_methods', 'List cards and bank accounts', 'agent', ({ auth }) => ({ data: store.listPaymentMethods(auth) })],
-    ['POST', '/v1/addresses', 'Add a US shipping address', 'agent', ({ auth, body }) => store.addAddress(auth, body)],
+    ['POST', '/v1/addresses', 'Add a US shipping address { name, line1, line2?, city, region, postal_code, phone?, set_default? }. Stays a one-off (use its id as address_id on that order) unless set_default: true, for a move', 'agent', ({ auth, body }) => store.addAddress(auth, body)],
     ['GET', '/v1/addresses', 'List addresses (confirmed: false means the first order there waits for the owner)', 'agent', ({ auth }) => ({ data: store.listAddresses(auth) })],
     ['POST', '/v1/addresses/:id/confirm', 'Owner only: confirm an address', 'owner', ({ auth, params }) => store.confirmAddress(auth, params.id)],
 
@@ -44,7 +44,7 @@ function routes(store) {
     ['PATCH', '/v1/subscriptions/:id', 'Update items, cadence_days, next_order_date, address_id, payment_method_id, metadata', 'agent', ({ auth, params, body }) => store.updateSubscription(auth, params.id, body)],
     ['POST', '/v1/subscriptions/:id/pause', 'Pause { until? }', 'agent', ({ auth, params, body }) => store.pauseSubscription(auth, params.id, body)],
     ['POST', '/v1/subscriptions/:id/resume', 'Resume', 'agent', ({ auth, params }) => store.resumeSubscription(auth, params.id)],
-    ['POST', '/v1/subscriptions/:id/skip', 'Skip the next delivery', 'agent', ({ auth, params }) => store.skipNext(auth, params.id)],
+    ['POST', '/v1/subscriptions/:id/skip', 'Skip the next delivery, or with {"skus":[...]} leave only those items out of it', 'agent', ({ auth, params, body }) => store.skipNext(auth, params.id, { skus: body?.skus })],
     ['POST', '/v1/subscriptions/:id/ship_now', 'Order now and restart the cadence', 'agent', ({ auth, params }) => store.shipNow(auth, params.id)],
     ['POST', '/v1/subscriptions/:id/supply_signal', "Report { signal: 'running_low' | 'overstocked' } to tune cadence", 'agent', ({ auth, params, body }) => store.reportSignal(auth, params.id, body)],
     ['POST', '/v1/subscriptions/:id/cancel', 'Cancel { reason? }', 'agent', ({ auth, params, body }) => store.cancelSubscription(auth, params.id, body)],
@@ -113,6 +113,11 @@ function llmsTxt(table, baseUrl) {
 
 ## Rules
 - Send an Idempotency-Key header on POST/PATCH so retries never double-order.
+- POST /v1/recommendations returns a plan of one to four deliveries (frequent first, slow for long-lasting items). Create one subscription per plan entry so every item is covered.
+- Quote before you buy: the quote's already_coming lists items already on an open order or a subscription due within a week, so you don't buy them twice.
+- Subscriptions show lasts_days per item and a supply_check when a delivery runs short or piles up before the next one. Fix it (quantity or cadence_days) rather than leaving it.
+- When household_size changes, PATCH /v1/account returns subscriptions_to_adjust: update those quantities or cadences in the same session.
+- Addresses you add are one-offs (pass address_id on that order) unless set_default is true, which you only send for a move.
 - Orders over the owner's spend policy come back with status "requires_approval". Domaru emails the owner an Approve / Decline link. Tell the human; do not retry. You can never approve or change limits.
 - Something wrong with a delivery? POST /v1/orders/{id}/problems, then read back GET /v1/cases. Changed your mind before it was bought? POST /v1/orders/{id}/cancel (full refund). You cannot issue refunds.
 - Support: ${SUPPORT}. Charges show on statements as DOMARU.

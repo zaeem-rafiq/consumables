@@ -213,6 +213,7 @@ export function openDb(path = ':memory:') {
   addCol('orders', 'resend_of', 'TEXT');
   addCol('orders', 'dispute_json', 'TEXT');
   addCol('shipments', 'retailer_order_id', 'TEXT');
+  addCol('subscriptions', 'skip_once_json', "TEXT NOT NULL DEFAULT '[]'");
   addCol('shipments', 'retailer_canceled_at', 'TEXT');
   addCol('shipments', 'problem', 'TEXT');
   return db;

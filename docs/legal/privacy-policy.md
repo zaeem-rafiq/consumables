@@ -41,8 +41,6 @@ The website sets only three cookies of its own, all needed to run it:
 
 We don't use advertising cookies, tracking pixels or third-party analytics. When you add a payment method on Stripe's page, Stripe sets its own cookies under its privacy policy.
 
-Our pages currently load fonts from Google Fonts, so Google receives your IP address when you visit.
-
 **What we don't get**
 
 We don't receive your conversations with your assistant. We only receive the requests the assistant sends to Domaru, such as "quote these items" or "create this subscription", and whatever details are included in them.

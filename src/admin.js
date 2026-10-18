@@ -4,7 +4,8 @@
 // refunds, Walmart cancellations and chargebacks are handled from here too.
 // Sign-in is a password form that sets a cookie; nothing secret goes in a URL.
 
-import { layout, esc, usd } from './ui.js';
+import { renderEmail } from './email-html.js';
+import { layout, esc, usd, day } from './ui.js';
 
 const addressText = (a) => [a.name, a.line1, a.line2, `${a.city}, ${a.region} ${a.postal_code}`, a.phone].filter(Boolean).join('\n');
 const signOut = '<a href="/admin/emails">Email log</a><form method="post" action="/admin/logout"><button class="linkbtn">Sign out</button></form>';
@@ -45,19 +46,20 @@ const flags = (o) => [
 function orderCard(o) {
   const placed = o.shipment.status === 'placed';
   return `<div class="panel stack--tight">
-    <div class="panel__head"><h3><a href="/admin/orders/${esc(o.id)}">${esc(o.account.name)}</a> ${flags(o)}</h3><span class="small muted">${esc(o.created_at.slice(0, 10))} · paid ${usd(o.amounts.total_cents)} · <span class="mono">${esc(o.id)}</span></span></div>
+    <div class="panel__head"><h3><a href="/admin/orders/${esc(o.id)}">${esc(o.account.name)}</a> ${flags(o)}</h3><span class="small muted">${esc(day(o.created_at))} · paid ${usd(o.amounts.total_cents)} · <span class="mono">${esc(o.id)}</span></span></div>
     ${o.shipment.retailer_canceled_at ? '<p class="notice notice--stop">Walmart canceled this. Order it on Amazon today at no extra cost to the customer, or refund the items from the order page.</p>' : ''}
     <div class="grid2">
-      <div class="stack--tight"><p class="small muted">${placed ? `Placed on Walmart${o.shipment.retailer_order_id ? ` · ${esc(o.shipment.retailer_order_id)}` : ''}` : '1. Add to your Walmart.com cart'}</p>${cart(o)}</div>
-      <div class="stack--tight"><p class="small muted">2. Walmart delivery address</p><p class="addr panel" style="user-select:all">${esc(addressText(o.ship_to))}</p>
+      <div class="qstep"><p class="step-label">${placed ? `Placed on Walmart${o.shipment.retailer_order_id ? ` · ${esc(o.shipment.retailer_order_id)}` : ''}` : '<b>1</b> Add to your Walmart.com cart'}</p>${cart(o)}</div>
+      <div class="qstep"><p class="step-label"><b>2</b> Ship to</p><p class="addr panel" style="user-select:all">${esc(addressText(o.ship_to))}</p>
         ${o.ship_to.phone ? '' : '<p class="small muted">No phone on file. Walmart asks for one; your own number works.</p>'}</div>
     </div>
-    <div class="actions">
-      ${placed ? '' : `<form class="actions" method="post" action="/admin/orders/${esc(o.id)}/place"><input type="text" name="retailer_order_id" placeholder="Walmart order number" style="max-width:16rem"><button class="btn btn--sm">Mark placed</button></form>`}
-      <form class="actions" method="post" action="/admin/orders/${esc(o.id)}/ship">
-        <select name="carrier" style="max-width:9rem"><option>Walmart</option><option>FedEx</option><option>UPS</option><option>USPS</option><option>OnTrac</option><option>Amazon</option><option>Other</option></select>
-        <input type="text" name="tracking_number" placeholder="Tracking number" required style="max-width:16rem">
-        <button class="btn btn--primary btn--sm">Mark shipped</button>
+    <div class="grid2">
+      ${placed ? '<p class="step-label step-label--done">Bought on Walmart</p>' : `<form class="qstep" method="post" action="/admin/orders/${esc(o.id)}/place"><p class="step-label"><b>3</b> Check out, then paste the Walmart order number</p>
+        <div class="actions"><input type="text" name="retailer_order_id" placeholder="Walmart order #"><button class="btn btn--primary">Mark placed</button></div></form>`}
+      <form class="qstep" method="post" action="/admin/orders/${esc(o.id)}/ship"><p class="step-label"><b>4</b> When Walmart ships it</p>
+        <div class="actions"><select name="carrier" class="qstep__carrier"><option>Walmart</option><option>FedEx</option><option>UPS</option><option>USPS</option><option>OnTrac</option><option>Amazon</option><option>Other</option></select>
+        <input type="text" name="tracking_number" placeholder="Tracking number" required>
+        <button class="btn${placed ? ' btn--primary' : ''}">Mark shipped</button></div>
       </form>
     </div>
   </div>`;
@@ -80,7 +82,7 @@ function caseCard(c) {
 }
 
 export function fulfillmentPage({ awaiting, placed, shipped, cases, late }) {
-  const shippedRows = shipped.map((o) => `<tr><td><a href="/admin/orders/${esc(o.id)}">${esc(o.account.name)}</a> ${flags(o)}</td><td>${esc(o.shipment.carrier ?? '')} <span class="mono">${esc(o.shipment.tracking_number ?? '')}</span></td><td>${esc(o.shipment.estimated_delivery_date)}</td>
+  const shippedRows = shipped.map((o) => `<tr><td><a href="/admin/orders/${esc(o.id)}">${esc(o.account.name)}</a> ${flags(o)}</td><td>${esc(o.shipment.carrier ?? '')} <span class="mono">${esc(o.shipment.tracking_number ?? '')}</span></td><td>${esc(day(o.shipment.estimated_delivery_date))}</td>
     <td class="num"><form method="post" action="/admin/orders/${esc(o.id)}/deliver"><button class="btn btn--sm">Delivered</button></form></td></tr>`).join('');
   return layout('Orders', `<div class="stack">
     <div class="stack--tight"><h1 class="title">Orders</h1>
@@ -118,11 +120,11 @@ export function adminOrderPage(o) {
     <div class="panel stack">
       ${o.refundable_cents > 0 ? `<form class="actions" method="post" action="/admin/orders/${esc(o.id)}/refund">
         <span class="money" style="max-width:9rem"><span>$</span><input type="number" name="amount" step="0.01" min="0.01" max="${(o.refundable_cents / 100).toFixed(2)}" placeholder="${(o.refundable_cents / 100).toFixed(2)}"></span>
-        <input type="text" name="reason" placeholder="Reason" style="max-width:16rem"><button class="btn btn--sm">Refund</button>
+        <input type="text" name="reason" placeholder="Reason"><button class="btn btn--sm">Refund</button>
         <span class="small muted">Empty amount refunds the rest (${usd(o.refundable_cents)}).</span></form>` : '<p class="muted small">Nothing left to refund.</p>'}
       ${sh && sh.status !== 'canceled' ? `<form class="actions" method="post" action="/admin/orders/${esc(o.id)}/problem">
         <select name="problem" style="max-width:12rem"><option value="lost">Lost or stuck</option><option value="damaged">Damaged</option><option value="wrong_item">Wrong item</option></select>
-        <input type="text" name="note" placeholder="Note" style="max-width:16rem"><button class="btn btn--quiet btn--sm">Mark problem</button></form>` : ''}
+        <input type="text" name="note" placeholder="Note"><button class="btn btn--quiet btn--sm">Mark problem</button></form>` : ''}
       ${sh && ['placed', 'awaiting_fulfillment'].includes(sh.status) ? `<form method="post" action="/admin/orders/${esc(o.id)}/retailer-canceled"><button class="btn btn--stop btn--sm">Walmart canceled it</button></form>` : ''}
     </div>
     ${o.refunds.length ? `<h2 class="section">Refunds</h2><div class="panel"><table class="lines"><tbody>${o.refunds.map((r) => `<tr><td>${esc(r.created_at.slice(0, 10))}</td><td>${esc(r.reason)}</td><td>${esc(r.status)}</td><td class="num">${usd(r.amount_cents)}</td></tr>`).join('')}</tbody></table></div>` : ''}
@@ -134,6 +136,6 @@ export function emailLogPage(emails) {
     <p><a href="/admin">← All orders</a></p>
     <h1 class="title">Email log</h1>
     <p class="muted">Every email the store sent or queued, newest first. Without an email provider configured they are only recorded here.</p>
-    ${emails.map((e) => `<details class="panel"><summary><strong>${esc(e.subject)}</strong> <span class="small muted">to ${esc(e.to)} · ${esc(e.created_at.slice(0, 16).replace('T', ' '))} · ${esc(e.status)}</span></summary><pre style="white-space:pre-wrap;font:inherit;margin:1rem 0 0">${esc(e.body)}</pre></details>`).join('') || '<p class="muted">No email yet.</p>'}
+    ${emails.map((e) => `<details class="panel"><summary><strong>${esc(e.subject)}</strong> <span class="small muted">to ${esc(e.to)} · ${esc(e.created_at.slice(0, 16).replace('T', ' '))} · ${esc(e.status)}</span></summary><iframe class="mail" sandbox="" title="${esc(e.subject)}" srcdoc="${esc(renderEmail(e))}"></iframe><details class="small"><summary>Plain-text version</summary><pre style="white-space:pre-wrap;font:inherit;margin:1rem 0 0">${esc(e.body)}</pre></details></details>`).join('') || '<p class="muted">No email yet.</p>'}
   </div>`, { wide: true, right: signOut, robots: false });
 }

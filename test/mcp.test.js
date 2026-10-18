@@ -45,7 +45,7 @@ test('agent goes from zero to subscription over MCP (stdio-style session)', asyn
 
   const rec = parse(await call('recommend_bundle', { cadence_days: 28 }));
   assert.equal(rec.household_size, 4);
-  const items = rec.items.slice(0, 4).map(({ sku, quantity }) => ({ sku, quantity }));
+  const items = rec.plan[0].items.slice(0, 4).map(({ sku, quantity }) => ({ sku, quantity }));
 
   const quote = parse(await call('quote', { items, cadence_days: 28 }));
   assert.ok(quote.amounts.total_cents > 0);
