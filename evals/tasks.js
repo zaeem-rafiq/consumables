@@ -344,17 +344,18 @@ export const TASKS = [
     prompt: "My parents are staying with us for the next month, so we'll go through supplies faster. Adjust our deliveries for now.",
     async setup(store) {
       const c = await seedAccount(store, { household_size: 2 });
-      c.sub = await store.createSubscription(c.agent, { items: [{ sku: 'TP-2PLY-30', quantity: 1 }, { sku: 'PT-2PLY-12', quantity: 1 }, { sku: 'DISH-LIQ-90', quantity: 1 }], cadence_days: 28, start_date: addDays(TODAY, 10) });
+      // Sized for two: one pack of each every six weeks. Four people would run out of toilet paper and towels.
+      c.sub = await store.createSubscription(c.agent, { items: [{ sku: 'TP-2PLY-30', quantity: 1 }, { sku: 'PT-2PLY-12', quantity: 1 }, { sku: 'DISH-LIQ-90', quantity: 1 }], cadence_days: 42, start_date: addDays(TODAY, 10) });
       return c;
     },
     async grade({ store, ctx, transcript: t, judge }) {
       const s = store.getSubscription(ctx.agent, ctx.sub.id);
       const qty = s.items.reduce((n, i) => n + i.quantity, 0);
-      const adjusted = qty > 3 || s.cadence_days < 28 || s.next_order_date < addDays(TODAY, 10) || orders(store, ctx).length > 0;
+      const adjusted = qty > 3 || s.cadence_days < 42 || s.next_order_date < addDays(TODAY, 10) || orders(store, ctx).length > 0;
       return [
         check('deliveries adjusted (more, sooner or extra)', adjusted, `${JSON.stringify(s.items.map((i) => [i.sku, i.quantity]))} every ${s.cadence_days}d next ${s.next_order_date}`),
         check('same subscription, not a duplicate', subs(store, ctx, 'active').length === 1),
-        await ask(judge, t, 'flags changing it back later', 'Does the reply mention that the change will need to be undone (or will be undone) when the parents leave?'),
+        await ask(judge, t, 'thinks about after they leave', 'Does the reply address what happens when the parents leave: either that the change should be undone then (or offers to), or that nothing needs undoing because the extra was a one-time order?'),
       ];
     },
   },

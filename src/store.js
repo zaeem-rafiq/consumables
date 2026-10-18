@@ -686,7 +686,11 @@ export class Store {
     const out = {
       ...priced,
       subscription,
-      policy: { would_require_approval: reasons.length > 0, reasons },
+      policy: {
+        would_require_approval: reasons.length > 0,
+        reasons,
+        ...(reasons.length ? { what_happens: "Placing it holds the order for the account owner, who gets an email with Approve and Decline buttons. Nothing is charged unless they approve, and the owner can approve it even if it is over a limit. Place it if the household asked for it, then tell them it is waiting for the owner. Don't split it into smaller orders to stay under the limits." } : {}),
+      },
       valid_until: addDays(dateOf(account.clock), 1),
     };
     if (subscription && cadence_days) {
@@ -705,26 +709,50 @@ export class Store {
     if (!Number.isInteger(people) || people < 1 || people > 20) throw badRequest('invalid_param', 'household_size must be an integer from 1 to 20.', { param: 'household_size' });
     this.#validateCadence(cadence_days);
     const chosen = skus?.length ? skus : STARTER_SKUS;
-    const items = chosen.map((sku) => {
+    const usage = chosen.map((sku) => {
       const prod = this.products.get(sku);
       if (!prod) throw this.#unknownSku(sku);
       const perDay = monthlyUsage(prod, people) / 30;
-      const perPack = baseUnitsPerPack(prod);
-      const quantity = Math.max(1, Math.round((perDay * cadence_days) / perPack));
+      return { prod, perDay, packDays: perDay > 0 ? baseUnitsPerPack(prod) / perDay : Infinity };
+    });
+    // One pack of some things (dish soap, toothpaste) lasts months. Sending those
+    // on the main cadence piles them up, so they go on a slower second delivery.
+    const slowCadence = Math.min(180, cadence_days * 3);
+    const groups = [
+      { cadence_days, rows: usage.filter((u) => u.packDays <= cadence_days * 1.75) },
+      { cadence_days: slowCadence, rows: usage.filter((u) => u.packDays > cadence_days * 1.75) },
+    ].filter((g) => g.rows.length);
+    const plan = groups.map((g) => {
+      const items = g.rows.map(({ prod, perDay }) => {
+        const perPack = baseUnitsPerPack(prod);
+        const quantity = Math.max(1, Math.round((perDay * g.cadence_days) / perPack));
+        return {
+          sku: prod.sku, name: prod.name, quantity,
+          days_of_supply: perDay > 0 ? Math.round((quantity * perPack) / perDay) : null,
+          estimated_monthly_usage: { amount: Math.round(monthlyUsage(prod, people) * 10) / 10, unit: prod.pack.base_unit ?? prod.pack.unit },
+        };
+      });
+      const priced = this.price(items, { subscription: true });
       return {
-        sku, name: prod.name, quantity,
-        days_of_supply: perDay > 0 ? Math.round((quantity * perPack) / perDay) : null,
-        estimated_monthly_usage: { amount: Math.round(monthlyUsage(prod, people) * 10) / 10, unit: prod.pack.base_unit ?? prod.pack.unit },
+        cadence_days: g.cadence_days,
+        label: g.cadence_days === cadence_days ? 'Runs out often' : 'Lasts longer',
+        items,
+        per_delivery: priced.amounts,
+        estimated_monthly_cents: Math.round((priced.amounts.total_cents * 30) / g.cadence_days),
       };
     });
-    const priced = this.price(items, { subscription: true });
+    const main = plan[0];
     return {
       household_size: people,
-      cadence_days,
-      items: items.map(({ sku, quantity, name, days_of_supply, estimated_monthly_usage }) => ({ sku, name, quantity, days_of_supply, estimated_monthly_usage })),
-      per_delivery: priced.amounts,
-      estimated_monthly_cents: Math.round((priced.amounts.total_cents * 30) / cadence_days),
-      next_step: 'Pass `items` and `cadence_days` to create_subscription (POST /v1/subscriptions). Some items last longer than the cadence; drop them or create a second subscription with a longer cadence.',
+      plan,
+      estimated_monthly_cents: plan.reduce((sum, d) => sum + d.estimated_monthly_cents, 0),
+      // The first delivery in the plan, for clients that read a single bundle.
+      cadence_days: main.cadence_days,
+      items: main.items,
+      per_delivery: main.per_delivery,
+      next_step: plan.length > 1
+        ? `Create one subscription per entry in plan, each with its own items and cadence_days (create_subscription / POST /v1/subscriptions). Items in the second entry last ${slowCadence} days or more per delivery, so sending them every ${cadence_days} days would pile them up.`
+        : 'Pass items and cadence_days to create_subscription (POST /v1/subscriptions).',
     };
   }
 
@@ -1286,15 +1314,20 @@ export class Store {
     const bank = this.db.prepare('SELECT type FROM payment_methods WHERE id = ?').get(s.payment_method_id)?.type === 'bank';
     const priced = this.price(items, { subscription: true, bank });
     const latest = this.db.prepare('SELECT * FROM orders WHERE subscription_id = ? ORDER BY created_at DESC, rowid DESC LIMIT 1').get(s.id);
+    // A paused subscription's next order is whenever it resumes, if that is later.
+    let next = s.status === 'canceled' ? null : s.next_order_date;
+    if (s.status === 'paused') next = s.pause_until ? (s.pause_until > next ? s.pause_until : next) : null;
     return {
       id: s.id,
       status: s.status,
       status_reason: s.status_reason,
       items: priced.lines.map(({ sku, name, quantity, unit_price_cents }) => ({ sku, name, quantity, unit_price_cents })),
       cadence_days: s.cadence_days,
-      next_order_date: s.status === 'canceled' ? null : s.next_order_date,
-      next_charge_date: s.status === 'canceled' ? null : this.#chargeDate(s.next_order_date, bank),
+      next_order_date: next,
+      next_charge_date: next && this.#chargeDate(next, bank),
+      estimated_arrival_date: next && addDays(next, this.fulfillment === 'mock' ? 3 : 5),
       pause_until: s.pause_until,
+      ...(s.status === 'paused' ? { resumes: s.pause_until ? `Resumes on ${s.pause_until}; the next order is placed that day.` : 'Paused until someone resumes it (resume_subscription).' } : {}),
       address_id: s.address_id,
       payment_method_id: s.payment_method_id,
       estimated_next_order: priced.amounts,

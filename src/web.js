@@ -185,6 +185,10 @@ export async function handleWeb(store, req, res, url, { base, adminKey, stripeWe
     if (!q.accept_terms) return render('Please agree to the terms to continue.');
     try {
       store.acceptTerms(auth);
+      // The limits on the Connect page are part of the Allow form.
+      if (['approval_required_above', 'per_order_limit', 'monthly_limit'].some((k) => k in q)) {
+        store.updatePolicy(auth, { approval_required_above_cents: cents(q.approval_required_above), per_order_limit_cents: cents(q.per_order_limit), monthly_limit_cents: cents(q.monthly_limit) });
+      }
       const code = store.createAuthCode(auth, oauth);
       return bounce({ code });
     } catch (err) {
@@ -255,6 +259,7 @@ export async function handleWeb(store, req, res, url, { base, adminKey, stripeWe
       return html(200, ownerPage({
         account, approvals, addresses: store.listAddresses(auth), paymentMethods: store.listPaymentMethods(auth), grants: store.listGrants(auth),
         orders: store.listOrders(auth, { limit: 10 }), cases: store.listCases(auth), testMode: store.mode === 'test',
+        subscriptions: store.listSubscriptions(auth).filter((x) => x.status !== 'canceled'),
         flash: { saved: 'Saved.', approved: 'Approved. The order is being placed.', rejected: 'Declined. Nothing was charged.', card: 'Card saved.', disconnected: 'Assistant disconnected.' }[url.searchParams.get('done')],
       }));
     }
@@ -305,6 +310,7 @@ export async function handleWeb(store, req, res, url, { base, adminKey, stripeWe
         return html(200, ownerPage({
           account, approvals: [], addresses: store.listAddresses(auth), paymentMethods: store.listPaymentMethods(auth), grants: store.listGrants(auth),
           orders: store.listOrders(auth, { limit: 10 }), cases: store.listCases(auth), testMode: store.mode === 'test', developerKey: key,
+          subscriptions: store.listSubscriptions(auth).filter((x) => x.status !== 'canceled'),
         }));
       }
     } catch (err) {

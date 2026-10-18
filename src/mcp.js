@@ -11,10 +11,10 @@ const subId = z.string().describe('Subscription id (sub_...)');
 const date = z.string().regex(/^\d{4}-\d{2}-\d{2}$/).describe('Date as YYYY-MM-DD, in the account clock');
 const idemKey = z.string().max(255).optional().describe('Optional. Reuse the same key when retrying so the action runs at most once.');
 
-const INSTRUCTIONS = `Domaru sells everyday household supplies (toilet paper, paper towels, dish soap, trash bags, detergent...) on subscription, built for agents.
-Typical flow: recommend_bundle -> quote -> create_subscription. Then manage with update_subscription, pause_subscription, skip_next_delivery, ship_now, report_supply_level and cancel_subscription.
+const instructions = (base) => `Domaru sells everyday household supplies (toilet paper, paper towels, dish soap, trash bags, detergent...) on subscription, built for agents.
+Typical flow: recommend_bundle -> quote -> create_subscription (recommend_bundle may return two deliveries in plan, a frequent one and a slower one for long-lasting items; create one subscription per plan entry). Then manage with update_subscription, pause_subscription, skip_next_delivery, ship_now, report_supply_level and cancel_subscription.
 Prices are integer cents (USD). Subscriptions get 5% off; orders of $35+ after discount ship free.
-Spend policy is set by the human owner. Orders over policy are held with status "requires_approval"; tell the human, do not retry. Agents cannot approve orders or raise limits.
+Spend policy is set by the household's owner. An order outside it is still placed, but held with status "requires_approval": the owner gets an email with Approve and Decline buttons, and nothing is charged unless they approve. Tell the human it is waiting for the owner; do not retry, and never split it into smaller orders to stay under the limits. You cannot approve orders or change limits. The owner changes limits by signing in at ${base}/owner with their email (no password; Domaru emails a link).
 Households connect Domaru from their assistant (Connect / sign in), which sets up the address, card and limits; you then shop within those limits. Developers without an account can call create_account (it emails the owner and returns an api_key attached to this session over stdio).
 Problems with a delivery (never arrived, damaged, wrong or missing item): call report_problem; Domaru's team resolves it and you can read back the case. You cannot issue refunds. Before an order is bought from the retailer, cancel_order cancels it with a full refund.
 Cards are the default. After the first delivery arrives, get_account shows bank_payments.offer: tell the human they can switch to bank payments and save 2% on every delivery, and send them the link from create_bank_setup_link.
@@ -26,7 +26,7 @@ Sandbox only: advance_test_clock moves time forward to simulate renewals and del
  * @param {{ attachKeyOnSignup?: boolean }} opts
  */
 export function buildMcpServer(store, session, { attachKeyOnSignup = true } = {}) {
-  const server = new McpServer({ name: 'domaru', version: '0.1.0' }, { instructions: INSTRUCTIONS });
+  const server = new McpServer({ name: 'domaru', version: '0.1.0' }, { instructions: instructions(store.publicUrl) });
 
   const auth = () => store.authenticate(session.apiKey);
   const ok = (data) => ({ content: [{ type: 'text', text: JSON.stringify(data, null, 2) }] });
