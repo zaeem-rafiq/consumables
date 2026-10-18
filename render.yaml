@@ -1,0 +1,44 @@
+# Render Blueprint: one always-on web service with a small disk for the SQLite
+# database. Secrets marked `sync: false` are typed into the Render dashboard
+# when the Blueprint is created; they never live in the repo.
+services:
+  - type: web
+    runtime: node
+    name: domaru
+    plan: 0.5c-512mb
+    region: ohio
+    branch: main
+    buildCommand: npm ci
+    startCommand: npm start
+    healthCheckPath: /health
+    autoDeployTrigger: commit
+    disk:
+      name: data
+      mountPath: /var/data
+      sizeGB: 1
+    domains:
+      - domaru.app
+      - www.domaru.app
+    envVars:
+      - key: TRUST_PROXY
+        value: auto
+      - key: NODE_VERSION
+        value: "22"
+      - key: DOMARU_DB
+        value: /var/data/domaru.db
+      - key: PUBLIC_URL
+        value: https://domaru.app
+      - key: FULFILLMENT
+        value: manual
+      - key: EMAIL_FROM
+        value: Domaru <support@domaru.app>
+      - key: SUPPORT_EMAIL
+        value: support@domaru.app
+      - key: ADMIN_KEY
+        generateValue: true
+      - key: STRIPE_SECRET_KEY
+        sync: false
+      - key: STRIPE_WEBHOOK_SECRET
+        sync: false
+      - key: RESEND_API_KEY
+        sync: false

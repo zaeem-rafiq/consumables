@@ -16,8 +16,15 @@ export const PRICING = {
   bank_discount_pct: 2,
   free_shipping_threshold_cents: 3500,
   shipping_cents: 599,
-  tax_rate_pct: 8,
 };
+
+/**
+ * Sales tax: charged only on deliveries to states where Domaru is registered to
+ * collect it. Quotes use estimate_pct, set at or above the highest combined local
+ * rate, so a quote is the most the order can cost (the Terms promise this). A
+ * placed order gets the exact rate for its address from Stripe Tax when offered.
+ */
+const TAX_DEFAULTS = { states: ['AR'], estimate_pct: 12 };
 
 /** Order-problem rules (operations/when-orders-go-wrong.md). Override per store with the `support` option. */
 export const SUPPORT_DEFAULTS = {
@@ -82,7 +89,7 @@ export class Store {
    * @param {'mock' | 'manual'} [opts.fulfillment] mock ships itself on the account clock; manual waits for an operator
    * @param {'test' | 'live'} [opts.mode] live accounts run on the real clock and cannot advance it
    */
-  constructor({ dbPath = ':memory:', payments = new MockPayments(), fulfillment = 'mock', mode = 'test', mailer = new OutboxMailer(), support = {}, publicUrl = 'http://localhost:8787' } = {}) {
+  constructor({ dbPath = ':memory:', payments = new MockPayments(), fulfillment = 'mock', mode = 'test', mailer = new OutboxMailer(), support = {}, tax = {}, publicUrl = 'http://localhost:8787' } = {}) {
     if (!['mock', 'manual'].includes(fulfillment)) throw new Error(`Unknown fulfillment mode '${fulfillment}'.`);
     if (!['test', 'live'].includes(mode)) throw new Error(`Unknown mode '${mode}'.`);
     this.db = openDb(dbPath);
@@ -92,6 +99,8 @@ export class Store {
     this.mode = mode;
     this.mailer = mailer;
     this.support = { ...SUPPORT_DEFAULTS, ...support };
+    this.tax = { ...TAX_DEFAULTS, ...tax };
+    this.tax.states = this.tax.states.map((x) => x.toUpperCase());
     this.publicUrl = publicUrl.replace(/\/$/, '');
   }
 
@@ -641,7 +650,8 @@ export class Store {
     return [...merged].map(([sku, quantity]) => ({ sku, quantity }));
   }
 
-  price(items, { subscription = false, bank = false } = {}) {
+  /** region: the delivery state. Tax is only added for states Domaru collects in. */
+  price(items, { subscription = false, bank = false, region } = {}) {
     const lines = items.map(({ sku, quantity }) => {
       const prod = this.products.get(sku);
       return { sku, name: prod.name, category: prod.category, quantity, unit_price_cents: prod.price_cents, line_total_cents: prod.price_cents * quantity };
@@ -652,7 +662,7 @@ export class Store {
     // Free shipping is judged before the bank discount, so switching to bank never adds shipping.
     const shipping = subtotal - discount >= PRICING.free_shipping_threshold_cents ? 0 : PRICING.shipping_cents;
     const afterDiscount = subtotal - discount - bankDiscount;
-    const tax = pct(afterDiscount, PRICING.tax_rate_pct);
+    const tax = this.#collectsTaxIn(region) ? pct(afterDiscount + shipping, this.tax.estimate_pct) : 0;
     return {
       lines,
       amounts: {
@@ -660,6 +670,60 @@ export class Store {
         total_cents: afterDiscount + shipping + tax, currency: 'usd',
       },
     };
+  }
+
+  #collectsTaxIn(region) {
+    return !!region && this.tax.states.includes(String(region).toUpperCase());
+  }
+
+  #region(addrId) {
+    const row = addrId ? this.db.prepare('SELECT json FROM addresses WHERE id = ?').get(addrId) : null;
+    return row ? p(row.json).region : undefined;
+  }
+
+  /**
+   * Price an order for its delivery address. Where tax applies and the payment
+   * provider can calculate it, the estimate is replaced by the exact amount, and
+   * taxRef is kept so the sale can be recorded for the tax return once paid.
+   */
+  async #priceFor(items, { subscription, bank, addrId }) {
+    const region = this.#region(addrId);
+    const priced = this.price(items, { subscription, bank, region });
+    if (!priced.amounts.tax_cents || !this.payments.calculateTax) return { priced, taxRef: null };
+    const a = priced.amounts;
+    const goods = a.subtotal_cents - a.discount_cents - a.bank_discount_cents;
+    // Spread the discounts over the lines in proportion; the last line takes the rounding.
+    let left = goods;
+    const lines = priced.lines.map((l, i) => {
+      const amount = i === priced.lines.length - 1 ? left : Math.round((l.line_total_cents * goods) / a.subtotal_cents);
+      left -= amount;
+      return { sku: l.sku, quantity: l.quantity, amount_cents: amount };
+    });
+    let t;
+    try {
+      t = await this.payments.calculateTax({ address: p(this.db.prepare('SELECT json FROM addresses WHERE id = ?').get(addrId).json), lines, shippingCents: a.shipping_cents });
+    } catch {
+      // Stripe Tax off or unreachable: charge the estimate rather than stop the order. Logged for the operator.
+      console.error('tax calculation failed; charged the estimate', { region, estimate_cents: a.tax_cents });
+      return { priced, taxRef: null };
+    }
+    // Never charge more than the quote: above the estimate, Domaru absorbs the difference.
+    if (t.tax_cents > a.tax_cents) console.error('exact tax above the quoted estimate; charged the estimate', { region, exact_cents: t.tax_cents, estimate_cents: a.tax_cents });
+    const taxCents = Math.min(t.tax_cents, a.tax_cents);
+    const amounts = { ...a, tax_cents: taxCents, total_cents: goods + a.shipping_cents + taxCents };
+    return { priced: { ...priced, amounts }, taxRef: t.ref };
+  }
+
+  /** Record a paid order's tax with the provider, so it shows in the tax reports. */
+  async #recordTax(orderId) {
+    const o = this.db.prepare('SELECT tax_ref, tax_txn FROM orders WHERE id = ?').get(orderId);
+    if (!o?.tax_ref || o.tax_txn || !this.payments.recordTax) return;
+    try {
+      const t = await this.payments.recordTax({ calculationRef: o.tax_ref, orderId });
+      this.db.prepare('UPDATE orders SET tax_txn = ? WHERE id = ?').run(t.ref, orderId);
+    } catch (err) {
+      console.error('tax record failed', orderId, err.message);
+    }
   }
 
   #monthSpend(accountId, today) {
@@ -697,7 +761,7 @@ export class Store {
     const account = this.#account(auth.accountId);
     const norm = this.#normalizeItems(items);
     const pmId = payment_method_id ?? account.default_payment_method_id;
-    const priced = this.price(norm, { subscription, bank: pmId ? this.#pm(account.id, pmId).type === 'bank' : false });
+    const priced = this.price(norm, { subscription, bank: pmId ? this.#pm(account.id, pmId).type === 'bank' : false, region: this.#region(account.default_address_id) });
     const reasons = this.#policyCheck(account, priced.lines, priced.amounts.total_cents, account.default_address_id);
     const out = {
       ...priced,
@@ -708,6 +772,7 @@ export class Store {
         ...(reasons.length ? { what_happens: "Placing it holds the order for the account owner, who gets an email with Approve and Decline buttons. Nothing is charged unless they approve, and the owner can approve it even if it is over a limit. Place it if the household asked for it, then tell them it is waiting for the owner. Don't split it into smaller orders to stay under the limits." } : {}),
       },
       valid_until: addDays(dateOf(account.clock), 1),
+      tax_note: `Sales tax is only charged on deliveries to ${this.tax.states.join(', ')}. Where it applies, this quote shows the most it can be; the order charges the exact amount for the address, never more than quoted.`,
     };
     const coming = this.#alreadyComing(account, norm.map((i) => i.sku));
     if (coming.length) out.already_coming = { items: coming, note: 'Some of these are already on the way or due soon. Tell the household before ordering more, so they are not bought twice.' };
@@ -748,6 +813,7 @@ export class Store {
   recommend(auth, { household_size, skus, cadence_days = 28 } = {}) {
     const account = auth ? this.#account(auth.accountId) : null;
     const people = household_size ?? account?.household_size ?? 2;
+    const region = this.#region(account?.default_address_id);
     if (!Number.isInteger(people) || people < 1 || people > 20) throw badRequest('invalid_param', 'household_size must be an integer from 1 to 20.', { param: 'household_size' });
     this.#validateCadence(cadence_days);
     const chosen = skus?.length ? skus : STARTER_SKUS;
@@ -779,7 +845,7 @@ export class Store {
         if (c <= (groups.filter((g) => g.rows.length).at(-1)?.cadence_days ?? 0) || !fits(first, c) || qty(first, c) > Math.max(2, Math.ceil(28 / first.packDays))) continue;
         const rows = rest.filter((u) => fits(u, c));
         // A delivery the owner has to approve every time is worse than one more box.
-        const over = cap != null && this.price(rows.map((u) => ({ sku: u.prod.sku, quantity: qty(u, c) })), { subscription: true }).amounts.total_cents > cap;
+        const over = cap != null && this.price(rows.map((u) => ({ sku: u.prod.sku, quantity: qty(u, c) })), { subscription: true, region }).amounts.total_cents > cap;
         // Most items wins; on a tie, the least extra stock per delivery.
         const waste = rows.reduce((sum, u) => sum + (qty(u, c) * u.packDays) / c - 1, 0);
         if (!best || (best.over && !over) || (best.over === over && (rows.length > best.rows.length || (rows.length === best.rows.length && waste < best.waste)))) best = { cadence_days: c, rows, over, waste };
@@ -789,7 +855,7 @@ export class Store {
       if (!best) break;
       // A fourth box only earns its place if it ships free; otherwise it's a one-time add.
       const fourth = groups.filter((g) => g.rows.length).length === 3;
-      if (fourth && this.price(best.rows.map((u) => ({ sku: u.prod.sku, quantity: qty(u, best.cadence_days) })), { subscription: true }).amounts.shipping_cents > 0) break;
+      if (fourth && this.price(best.rows.map((u) => ({ sku: u.prod.sku, quantity: qty(u, best.cadence_days) })), { subscription: true, region }).amounts.shipping_cents > 0) break;
       groups.push(best);
       rest = rest.filter((u) => !best.rows.includes(u));
     }
@@ -812,7 +878,7 @@ export class Store {
           estimated_monthly_usage: { amount: Math.round(monthlyUsage(prod, people) * 10) / 10, unit: prod.pack.base_unit ?? prod.pack.unit },
         };
       });
-      const priced = this.price(items, { subscription: true });
+      const priced = this.price(items, { subscription: true, region });
       return {
         cadence_days: g.cadence_days,
         label: g.cadence_days === cadence_days ? 'Runs out often' : 'Lasts longer',
@@ -856,14 +922,15 @@ export class Store {
   /** fulfillOn: the day the order may ship. Bank debits are charged ahead of it so they clear first. */
   async #placeOrder(account, { items, addrId, pmId, subscriptionId, fulfillOn }) {
     this.#requireNotOnHold(account);
-    const priced = this.price(items, { subscription: !!subscriptionId, bank: this.#pm(account.id, pmId).type === 'bank' });
+    const { priced, taxRef } = await this.#priceFor(items, { subscription: !!subscriptionId, bank: this.#pm(account.id, pmId).type === 'bank', addrId });
+    this.#requireNotOnHold(this.#account(account.id));
     const orderId = id('ord');
     const now = account.clock;
     // Check the limits and record the order in one synchronous step (no await in
     // between), so simultaneous orders each see the others' spend.
     const reasons = this.#policyCheck(account, priced.lines, priced.amounts.total_cents, addrId);
-    this.db.prepare(`INSERT INTO orders (id, account_id, subscription_id, status, lines_json, amounts_json, address_id, payment_method_id, charges_json, fulfill_on, created_at, updated_at)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, '[]', ?, ?, ?)`).run(orderId, account.id, subscriptionId, reasons.length ? 'requires_approval' : 'pending', j(priced.lines), j(priced.amounts), addrId, pmId, fulfillOn, now, now);
+    this.db.prepare(`INSERT INTO orders (id, account_id, subscription_id, status, lines_json, amounts_json, address_id, payment_method_id, charges_json, fulfill_on, tax_ref, created_at, updated_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, '[]', ?, ?, ?, ?)`).run(orderId, account.id, subscriptionId, reasons.length ? 'requires_approval' : 'pending', j(priced.lines), j(priced.amounts), addrId, pmId, fulfillOn, taxRef, now, now);
     if (reasons.length) {
       this.#requestApproval(account, orderId, reasons, priced);
       return this.getOrder({ accountId: account.id }, orderId);
@@ -936,6 +1003,7 @@ export class Store {
     }
     this.db.prepare("UPDATE orders SET status = 'paid', charges_json = ?, updated_at = ? WHERE id = ?").run(j(charges), account.clock, orderId);
     this.#emit(account.id, 'order.paid', { order_id: orderId, amount_cents: charges.at(-1).amount_cents });
+    this.#recordTax(orderId);
     const o = this.db.prepare('SELECT fulfill_on FROM orders WHERE id = ?').get(orderId);
     if (!o.fulfill_on || o.fulfill_on <= dateOf(account.clock)) this.#ship(account, orderId);
     return true;
@@ -1132,6 +1200,10 @@ export class Store {
     this.db.prepare(`UPDATE orders SET refunds_json = ?, status = CASE WHEN ? AND status = 'paid' THEN 'refunded' ELSE status END, updated_at = ? WHERE id = ?`)
       .run(j(refunds), full ? 1 : 0, rec.created_at, orderId);
     if (r.status !== 'succeeded') throw new ApiError(502, 'refund_failed', 'The payment provider did not accept the refund.', { hint: 'Try again, or refund it in the Stripe dashboard.' });
+    if (latest.tax_txn && this.payments.reverseTax) {
+      // Refunded tax comes off the tax report too. The refund itself already happened, so a failure here is only logged.
+      await this.payments.reverseTax({ transactionRef: latest.tax_txn, orderId, n, amountCents }).catch((err) => console.error('tax reversal failed', orderId, err.message));
+    }
     this.#emit(account.id, 'order.refunded', { order_id: orderId, amount_cents: amountCents, reason, case_id: caseId });
     const a = this.#account(account.id);
     this.#mail(a, 'refund', a.email, `Refund of ${usd(amountCents)} from Domaru`, [
@@ -1359,7 +1431,7 @@ export class Store {
     this.db.prepare(`INSERT INTO subscriptions (id, account_id, status, items_json, cadence_days, next_order_date, address_id, payment_method_id, metadata_json, created_at, updated_at)
       VALUES (?, ?, 'active', ?, ?, ?, ?, ?, ?, ?, ?)`).run(subId, account.id, j(norm), cadence_days, start_date ?? today, addrId, pmId, j(metadata), account.clock, account.clock);
     this.#emit(account.id, 'subscription.created', { subscription_id: subId });
-    const priced = this.price(norm, { subscription: true, bank: this.#pm(account.id, pmId).type === 'bank' });
+    const priced = this.price(norm, { subscription: true, bank: this.#pm(account.id, pmId).type === 'bank', region: this.#region(addrId) });
     this.#mail(account, 'subscription_started', account.email, 'Your Domaru subscription has started', [
       `Your assistant started a subscription for ${account.name}. It renews automatically every ${cadence_days} days until you or your assistant cancel it.`,
       '',
@@ -1392,7 +1464,7 @@ export class Store {
   #presentSub(s) {
     const items = p(s.items_json);
     const bank = this.db.prepare('SELECT type FROM payment_methods WHERE id = ?').get(s.payment_method_id)?.type === 'bank';
-    const priced = this.price(items, { subscription: true, bank });
+    const priced = this.price(items, { subscription: true, bank, region: this.#region(s.address_id) });
     const latest = this.db.prepare('SELECT * FROM orders WHERE subscription_id = ? ORDER BY created_at DESC, rowid DESC LIMIT 1').get(s.id);
     // A paused subscription's next order is whenever it resumes, if that is later.
     let next = s.status === 'canceled' ? null : s.next_order_date;
@@ -1477,9 +1549,9 @@ export class Store {
 
     // A new card on a past-due subscription retries the failed order right away.
     if (s.status === 'past_due' && payment_method_id !== undefined && s.failed_order_id) {
-      const failed = this.db.prepare('SELECT lines_json FROM orders WHERE id = ?').get(s.failed_order_id);
-      const repriced = this.price(p(failed.lines_json), { subscription: true, bank: this.#pm(account.id, payment_method_id).type === 'bank' });
-      this.db.prepare('UPDATE orders SET payment_method_id = ?, amounts_json = ? WHERE id = ?').run(payment_method_id, j(repriced.amounts), s.failed_order_id);
+      const failed = this.db.prepare('SELECT lines_json, address_id FROM orders WHERE id = ?').get(s.failed_order_id);
+      const { priced: repriced, taxRef } = await this.#priceFor(p(failed.lines_json), { subscription: true, bank: this.#pm(account.id, payment_method_id).type === 'bank', addrId: failed.address_id });
+      this.db.prepare('UPDATE orders SET payment_method_id = ?, amounts_json = ?, tax_ref = ? WHERE id = ?').run(payment_method_id, j(repriced.amounts), taxRef, s.failed_order_id);
       if (await this.#chargeAndFulfill(this.#account(account.id), s.failed_order_id)) this.#syncSubscriptionAfterPayment(this.#account(account.id), s.failed_order_id);
     }
     return this.getSubscription(auth, s.id);

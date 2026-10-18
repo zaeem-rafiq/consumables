@@ -215,6 +215,42 @@ export class StripePayments {
     }
   }
 
+  /**
+   * Sales tax for one order, from Stripe Tax: the exact combined state and local
+   * rate for the delivery address. Line amounts are after discounts.
+   */
+  async calculateTax({ address, lines, shippingCents }) {
+    try {
+      const c = await this.#request('POST', '/v1/tax/calculations', {
+        currency: 'usd',
+        customer_details: {
+          address: { line1: address.line1, line2: address.line2, city: address.city, state: address.region, postal_code: address.postal_code, country: address.country ?? 'US' },
+          address_source: 'shipping',
+        },
+        // txcd_99999999: general tangible goods.
+        line_items: lines.map((l) => ({ amount: l.amount_cents, quantity: l.quantity, reference: l.sku, tax_code: 'txcd_99999999' })),
+        shipping_cost: { amount: shippingCents },
+      });
+      return { tax_cents: c.tax_amount_exclusive, ref: c.id };
+    } catch (err) {
+      throw upstream(err);
+    }
+  }
+
+  /** Turn a paid order's calculation into a recorded sale, so it appears in Stripe's tax reports. */
+  async recordTax({ calculationRef, orderId }) {
+    const t = await this.#request('POST', '/v1/tax/transactions/create_from_calculation', { calculation: calculationRef, reference: orderId }, `taxtxn-${orderId}`);
+    return { ref: t.id };
+  }
+
+  /** Take a refund off the tax report. The amount includes tax, as refunded. */
+  async reverseTax({ transactionRef, orderId, n, amountCents }) {
+    const t = await this.#request('POST', '/v1/tax/transactions/create_reversal', {
+      mode: 'partial', original_transaction: transactionRef, reference: `${orderId}-refund-${n}`, flat_amount: -amountCents,
+    }, `taxrev-${orderId}-${n}`);
+    return { ref: t.id };
+  }
+
   /** Where a pending debit stands now. */
   async checkCharge({ ref }) {
     try {

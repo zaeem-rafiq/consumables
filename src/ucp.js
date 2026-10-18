@@ -136,10 +136,11 @@ export class Ucp {
     const account = this.store.getAccount(auth.accountId);
     this.#syncWithOrder(auth, c);
     const messages = [...(c.messages ?? []), ...extraMessages];
-    const priced = c.lines.length ? this.store.price(c.lines, { subscription: false }) : null;
-    const a = priced?.amounts;
     const addresses = this.store.listAddresses(auth);
     const destinationId = c.destination_id ?? account.default_address_id;
+    const region = addresses.find((x) => x.id === destinationId)?.region;
+    const priced = c.lines.length ? this.store.price(c.lines, { subscription: false, region }) : null;
+    const a = priced?.amounts;
     const cards = this.store.listPaymentMethods(auth);
     const open = !['completed', 'canceled', 'requires_escalation'].includes(c.status);
 

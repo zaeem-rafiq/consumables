@@ -13,6 +13,8 @@
 //   SUPPORT_EMAIL               support inbox shown to customers and agents (default support@domaru.app)
 //   REFUND_NO_QUESTIONS_CENTS   refund or resend without proof up to this much per problem (default 4000)
 //   CLAIM_LIMIT, CLAIM_WINDOW_DAYS  proof needed after this many claims in this many days (default 2 in 90)
+//   TAX_STATES                  states Domaru collects sales tax in, comma-separated (default AR)
+//   TAX_ESTIMATE_PCT            rate quotes show before the exact rate is known: the most an order can be charged (default 12)
 import { Store } from '../src/store.js';
 import { startServer } from '../src/http.js';
 import { StripePayments } from '../src/payments.js';
@@ -35,9 +37,12 @@ const support = Object.fromEntries(Object.entries({
   email: env.SUPPORT_EMAIL, from: env.EMAIL_FROM,
   no_questions_refund_cents: num(env.REFUND_NO_QUESTIONS_CENTS), claim_limit: num(env.CLAIM_LIMIT), claim_window_days: num(env.CLAIM_WINDOW_DAYS),
 }).filter(([, v]) => v !== undefined));
+const tax = Object.fromEntries(Object.entries({
+  states: env.TAX_STATES ? env.TAX_STATES.split(',').map((x) => x.trim()).filter(Boolean) : undefined, estimate_pct: num(env.TAX_ESTIMATE_PCT),
+}).filter(([, v]) => v !== undefined));
 const mailer = env.RESEND_API_KEY ? new ResendMailer({ apiKey: env.RESEND_API_KEY }) : undefined;
 const port = Number(env.PORT ?? 8787);
-const store = new Store({ dbPath: env.DOMARU_DB ?? 'domaru.db', payments, fulfillment, mode, mailer, support, publicUrl: env.PUBLIC_URL ?? `http://localhost:${port}` });
+const store = new Store({ dbPath: env.DOMARU_DB ?? 'domaru.db', payments, fulfillment, mode, mailer, support, tax, publicUrl: env.PUBLIC_URL ?? `http://localhost:${port}` });
 const server = await startServer(store, { port, baseUrl: env.PUBLIC_URL, adminKey: env.ADMIN_KEY, stripeWebhookSecret: env.STRIPE_WEBHOOK_SECRET });
 console.log(`Domaru API on http://localhost:${server.address().port}  (${mode} mode, payments: ${store.payments.name}, fulfillment: ${fulfillment})`);
 

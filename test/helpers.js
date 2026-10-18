@@ -1,6 +1,6 @@
 import { Store } from '../src/store.js';
 
-export const ADDRESS = { name: 'Test Household', line1: '1 Main St', city: 'New York', region: 'NY', postal_code: '10001' };
+export const ADDRESS = { name: 'Test Household', line1: '1 Main St', city: 'Bentonville', region: 'AR', postal_code: '72712' };
 
 /** Owner auth as the signed-in household would have it (via the emailed sign-in link). */
 export const ownerOf = (accountId) => ({ accountId, role: 'owner' });

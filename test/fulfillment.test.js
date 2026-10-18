@@ -64,7 +64,7 @@ test('operator page: password sign-in with a cookie, lists orders, ships and del
     assert.match(html, /walmart\.com\/ip\/15106305176/);
     assert.match(html, /Great Value Everyday Strong Paper Towels/);
     assert.match(html, /Concierge home/);
-    assert.match(html, /10001/);
+    assert.match(html, /72712/);
     assert.doesNotMatch(html, /secret/, 'the password is never written into the page');
 
     const ship = await fetch(`${base}/admin/orders/${orderId}/ship`, { ...form, headers: { ...form.headers, ...jar }, body: 'carrier=USPS&tracking_number=9400' });

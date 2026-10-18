@@ -94,7 +94,7 @@ function openapi(table, baseUrl) {
 
 const SUPPORT = 'support@domaru.app';
 
-function llmsTxt(table, baseUrl) {
+function llmsTxt(table, baseUrl, tax = { states: ['AR'] }) {
   return `# Domaru
 
 > Everyday household supplies (toilet paper, paper towels, dish soap, trash bags, detergent, batteries) on subscription, built for AI agents. JSON over HTTP or MCP.
@@ -102,7 +102,7 @@ function llmsTxt(table, baseUrl) {
 - MCP (Streamable HTTP): ${baseUrl}/mcp  (send "Authorization: Bearer <api_key>")
 - OpenAPI: ${baseUrl}/openapi.json
 - Money is integer cents, USD. Dates are YYYY-MM-DD in the account clock.
-- Subscriptions get ${PRICING.subscription_discount_pct}% off. Free shipping at $${PRICING.free_shipping_threshold_cents / 100}+ after discount, else $${PRICING.shipping_cents / 100}. Tax ${PRICING.tax_rate_pct}% (mock).
+- Subscriptions get ${PRICING.subscription_discount_pct}% off. Free shipping at $${PRICING.free_shipping_threshold_cents / 100}+ after discount, else $${PRICING.shipping_cents / 100}. Sales tax only on deliveries to ${tax.states.join(', ')} (goods and shipping); a quote shows the most it can be, and the order charges the exact amount for the address.
 
 ## Quickstart
 1. Households: connect Domaru from your assistant (MCP at ${baseUrl}/mcp uses OAuth: the person signs in by emailed link, adds an address and card, and taps Allow). Developers: POST /v1/accounts {"name":"My household","email":"owner@example.com"} -> api_key; the owner is emailed a sign-in link.
@@ -213,7 +213,7 @@ export function createApp(store, { baseUrl, adminKey, stripeWebhookSecret } = {}
       if (url.pathname === '/mcp') return await handleMcp(req, res, base);
       if (await handleWeb(store, req, res, url, { base, adminKey, stripeWebhookSecret, send, limits })) return;
       if (req.method === 'GET' && url.pathname === '/') {
-        if ((req.headers.accept ?? '').includes('text/markdown')) return send(res, 200, llmsTxt(table, base), 'text/markdown');
+        if ((req.headers.accept ?? '').includes('text/markdown')) return send(res, 200, llmsTxt(table, base, store.tax), 'text/markdown');
         if ((req.headers.accept ?? '').includes('text/html')) return send(res, 200, landingPage({ base }), 'text/html');
         return send(res, 200, {
           name: 'Domaru', description: 'Household consumables on subscription, built for AI agents.',
@@ -224,7 +224,7 @@ export function createApp(store, { baseUrl, adminKey, stripeWebhookSecret } = {}
       if (req.method === 'GET' && url.pathname === '/.well-known/ucp') return send(res, 200, ucpProfile(base));
       if (url.pathname.startsWith('/ucp/') && await new Ucp(store, { base }).handle(req, res, url, { readBody, send, bearer })) return;
       if (req.method === 'GET' && url.pathname === '/openapi.json') return send(res, 200, openapi(table, base));
-      if (req.method === 'GET' && url.pathname === '/llms.txt') return send(res, 200, llmsTxt(table, base), 'text/plain');
+      if (req.method === 'GET' && url.pathname === '/llms.txt') return send(res, 200, llmsTxt(table, base, store.tax), 'text/plain');
 
       const methodMatches = table.filter((r) => r.re.test(url.pathname));
       const route = methodMatches.find((r) => r.method === req.method);
