@@ -4,9 +4,10 @@ import { Store } from '../src/store.js';
 import { startServer } from '../src/http.js';
 import { ADDRESS } from './helpers.js';
 
-let server, base;
+let server, base, store;
 before(async () => {
-  server = await startServer(new Store(), { port: 0, host: '127.0.0.1' });
+  store = new Store();
+  server = await startServer(store, { port: 0, host: '127.0.0.1' });
   base = `http://127.0.0.1:${server.address().port}`;
 });
 after(() => server.close());
@@ -38,8 +39,9 @@ test('discovery: index, llms.txt, openapi', async () => {
 });
 
 test('end-to-end agent flow over HTTP', async () => {
-  const acct = await call('POST', '/v1/accounts', { body: { name: 'HTTP household', household_size: 3 } });
+  const acct = await call('POST', '/v1/accounts', { body: { name: 'HTTP household', email: 'http@example.com', household_size: 3 } });
   assert.equal(acct.status, 201);
+  assert.equal(acct.body.owner_key, undefined, 'the owner key never goes to the caller');
   const key = acct.body.api_key;
 
   assert.equal((await call('GET', '/v1/account')).status, 401);
@@ -53,7 +55,15 @@ test('end-to-end agent flow over HTTP', async () => {
   const idem = { 'idempotency-key': 'create-1' };
   const sub = await call('POST', '/v1/subscriptions', { key, body: { items, cadence_days: 28 }, headers: idem });
   assert.equal(sub.status, 201);
-  assert.equal(sub.body.latest_order.status, 'paid');
+  // The agent added this address, so the first order waits for the owner, who approves from the email.
+  assert.equal(sub.body.latest_order.status, 'requires_approval');
+  const mail = store.listEmails({ to: 'http@example.com', kind: 'approval_requested' })[0];
+  const link = new URL(/https?:\/\/\S+\/owner\/approvals\/\S+/.exec(mail.body)[0]);
+  const page = await fetch(`${base}${link.pathname}${link.search}`);
+  assert.match(await page.text(), /Approve \$/);
+  const tap = await fetch(`${base}${link.pathname}/decide`, { method: 'POST', redirect: 'manual', headers: { 'content-type': 'application/x-www-form-urlencoded' }, body: `t=${link.searchParams.get('t')}&decision=approve` });
+  assert.equal(tap.status, 303);
+  assert.equal((await call('GET', `/v1/orders/${sub.body.latest_order.id}`, { key })).body.status, 'paid');
   const replay = await call('POST', '/v1/subscriptions', { key, body: { items, cadence_days: 28 }, headers: idem });
   assert.equal(replay.status, 200);
   assert.equal(replay.body.id, sub.body.id);
@@ -74,23 +84,21 @@ test('end-to-end agent flow over HTTP', async () => {
   assert.equal(canceled.body.status, 'canceled');
 });
 
-test('owner key gates policy and approvals', async () => {
-  const acct = await call('POST', '/v1/accounts', { body: { name: 'Gated', policy: { approval_required_above_cents: 1000 } } });
-  const { api_key: key, owner_key: owner } = acct.body;
+test('agent keys cannot approve or change limits; policy at sign-up is refused', async () => {
+  const refused = await call('POST', '/v1/accounts', { body: { name: 'Gated', email: 'g@example.com', policy: { per_order_limit_cents: null } } });
+  assert.equal(refused.status, 403);
+  const acct = await call('POST', '/v1/accounts', { body: { name: 'Gated', email: 'g@example.com' } });
+  const key = acct.body.api_key;
   await call('POST', '/v1/payment_methods', { key, body: { token: 'pm_card_visa' } });
   await call('POST', '/v1/addresses', { key, body: ADDRESS });
   const order = await call('POST', '/v1/orders', { key, body: { items: [{ sku: 'TP-2PLY-30' }] } });
   assert.equal(order.body.status, 'requires_approval');
-
-  const pending = await call('GET', '/v1/approvals', { key });
-  assert.equal(pending.body.data.length, 1);
   const denied = await call('POST', `/v1/approvals/${order.body.approval.id}/approve`, { key });
   assert.equal(denied.status, 403);
   assert.ok(denied.body.error.hint);
-  const ok = await call('POST', `/v1/approvals/${order.body.approval.id}/approve`, { key: owner });
-  assert.equal(ok.body.status, 'paid');
-
   assert.equal((await call('PATCH', '/v1/account/policy', { key, body: { per_order_limit_cents: 1 } })).status, 403);
+  assert.equal((await call('PATCH', '/v1/account', { key, body: { email: 'thief@example.com' } })).status, 403);
+  const { owner_key: owner } = store.createOwnerKey({ accountId: acct.body.account.id, role: 'owner' });
   assert.equal((await call('PATCH', '/v1/account/policy', { key: owner, body: { per_order_limit_cents: 5000 } })).body.policy.per_order_limit_cents, 5000);
 });
 

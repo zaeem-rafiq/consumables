@@ -2,11 +2,12 @@
 // behavior (pricing, spend policy, billing, fulfillment) is identical across
 // surfaces.
 
-import { createHash, randomBytes } from 'node:crypto';
+import { createHash, randomBytes, timingSafeEqual } from 'node:crypto';
 import { openDb } from './db.js';
 import { PRODUCTS, CATEGORIES, presentProduct, baseUnitsPerPack, monthlyUsage } from './catalog.js';
 import { ApiError, badRequest, notFound, unauthorized, forbidden, conflict } from './errors.js';
 import { MockPayments, addBusinessDays, BANK_CLEARING_BUSINESS_DAYS } from './payments.js';
+import { OutboxMailer } from './email.js';
 
 export const PRICING = {
   subscription_discount_pct: 5,
@@ -16,6 +17,20 @@ export const PRICING = {
   shipping_cents: 599,
   tax_rate_pct: 8,
 };
+
+/** Order-problem rules (operations/when-orders-go-wrong.md). Override per store with the `support` option. */
+export const SUPPORT_DEFAULTS = {
+  email: 'support@domaru.app',
+  from: 'Domaru <support@domaru.app>',
+  // Refund or resend without asking for proof up to this much per problem.
+  no_questions_refund_cents: 4000,
+  // More than this many never-arrived / damaged / missing claims in the window means proof first.
+  claim_limit: 2,
+  claim_window_days: 90,
+};
+
+/** Bump when the terms text changes; owners accept a specific version. */
+export const TERMS_VERSION = '2026-10-18-draft';
 
 export const DEFAULT_POLICY = {
   approval_required_above_cents: 10000,
@@ -34,6 +49,7 @@ const MAX_ADVANCE_DAYS = 400;
 
 const id = (prefix) => `${prefix}_${randomBytes(9).toString('base64url')}`;
 const hash = (s) => createHash('sha256').update(s).digest('hex');
+const safeEqual = (a, b) => a.length === b.length && timingSafeEqual(Buffer.from(a), Buffer.from(b));
 const j = (v) => JSON.stringify(v);
 const p = (s) => (s == null ? null : JSON.parse(s));
 const dateOf = (iso) => iso.slice(0, 10);
@@ -44,6 +60,17 @@ const addDays = (date, n) => {
 };
 const isDate = (s) => typeof s === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(s) && !Number.isNaN(Date.parse(s));
 const pct = (amount, rate) => Math.round((amount * rate) / 100);
+const refundedCents = (o) => p(o.refunds_json ?? '[]').filter((r) => r.status === 'succeeded').reduce((s, r) => s + r.amount_cents, 0);
+const usd = (cents) => `$${(cents / 100).toFixed(2)}`;
+const okRedirect = (u) => {
+  try {
+    const x = new URL(u);
+    return x.protocol === 'https:' || (x.protocol === 'http:' && ['localhost', '127.0.0.1'].includes(x.hostname));
+  } catch {
+    return false;
+  }
+};
+const isEmail = (s) => typeof s === 'string' && /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(s) && s.length <= 254;
 const BANK_OFFER = `Switch to bank payments and save ${PRICING.bank_discount_pct}% on every delivery.`;
 
 export class Store {
@@ -54,7 +81,7 @@ export class Store {
    * @param {'mock' | 'manual'} [opts.fulfillment] mock ships itself on the account clock; manual waits for an operator
    * @param {'test' | 'live'} [opts.mode] live accounts run on the real clock and cannot advance it
    */
-  constructor({ dbPath = ':memory:', payments = new MockPayments(), fulfillment = 'mock', mode = 'test' } = {}) {
+  constructor({ dbPath = ':memory:', payments = new MockPayments(), fulfillment = 'mock', mode = 'test', mailer = new OutboxMailer(), support = {}, publicUrl = 'http://localhost:8787' } = {}) {
     if (!['mock', 'manual'].includes(fulfillment)) throw new Error(`Unknown fulfillment mode '${fulfillment}'.`);
     if (!['test', 'live'].includes(mode)) throw new Error(`Unknown mode '${mode}'.`);
     this.db = openDb(dbPath);
@@ -62,6 +89,9 @@ export class Store {
     this.payments = payments;
     this.fulfillment = fulfillment;
     this.mode = mode;
+    this.mailer = mailer;
+    this.support = { ...SUPPORT_DEFAULTS, ...support };
+    this.publicUrl = publicUrl.replace(/\/$/, '');
   }
 
   // ---------------------------------------------------------------- catalog
@@ -102,37 +132,253 @@ export class Store {
 
   // -------------------------------------------------------------- accounts
 
-  createAccount({ name, email, household_size = 2, policy = {}, start_date } = {}) {
+  /**
+   * Sign-up. The agent gets its api_key; the owner key never goes to the caller.
+   * Instead the owner is emailed a one-time link to claim the account, where they
+   * accept the terms, approve orders and set limits. Limits start at the defaults.
+   */
+  createAccount({ name, email, household_size = 2, policy, start_date } = {}) {
     if (!name || typeof name !== 'string') throw badRequest('missing_param', 'name is required.', { param: 'name', hint: 'Pass a display name for the household, e.g. "Rafiq household".' });
+    if (!isEmail(email)) throw badRequest('missing_param', "email is required: the account owner's email address.", { param: 'email', hint: 'Domaru emails the owner a link to claim the account, approve orders and set limits.' });
+    if (policy !== undefined) {
+      throw forbidden('Spending limits start at the defaults and only the owner can change them.', 'Create the account without policy. The owner sets limits after claiming the account from the email Domaru sends them.');
+    }
     if (!Number.isInteger(household_size) || household_size < 1 || household_size > 20) {
       throw badRequest('invalid_param', 'household_size must be an integer from 1 to 20.', { param: 'household_size' });
     }
     if (start_date != null && (this.mode === 'live' || !isDate(start_date))) throw badRequest('invalid_param', 'start_date must be YYYY-MM-DD, and is only allowed in test mode.', { param: 'start_date' });
     const accountId = id('acct');
     const apiKey = `ck_${this.mode}_${randomBytes(18).toString('base64url')}`;
-    const ownerKey = `ok_${this.mode}_${randomBytes(18).toString('base64url')}`;
+    // Placeholder until the owner claims the account; nobody holds a key that matches it.
+    const unclaimed = hash(`unclaimed:${randomBytes(24).toString('hex')}`);
     const now = start_date ? `${start_date}T12:00:00.000Z` : new Date().toISOString();
-    const merged = this.#validatePolicy({ ...DEFAULT_POLICY, ...policy });
     this.db.prepare(`INSERT INTO accounts (id, name, email, mode, api_key_hash, owner_key_hash, household_size, policy_json, clock, created_at)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`).run(accountId, name, email ?? null, this.mode, hash(apiKey), hash(ownerKey), household_size, j(merged), now, now);
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`).run(accountId, name, email, this.mode, hash(apiKey), unclaimed, household_size, j({ ...DEFAULT_POLICY }), now, now);
     this.#emit(accountId, 'account.created', { account_id: accountId });
+    this.#sendOwnerInvite(this.#account(accountId));
     return {
       account: this.getAccount(accountId),
       api_key: apiKey,
-      owner_key: ownerKey,
-      note: 'api_key is for the agent. owner_key is for the human: it approves held orders and changes spend policy. Neither is shown again.',
+      owner: { email, invite_sent: true },
+      note: `api_key is for you, the agent, and is not shown again. We emailed ${email} a link to claim the account: the owner approves held orders and sets spending limits there. Until then the default limits apply.`,
     };
+  }
+
+  #sendOwnerInvite(a) {
+    this.#mail(a, 'owner_invite', a.email, `Your Domaru account for ${a.name}`, [
+      'Your assistant set up a Domaru account to keep your household stocked with everyday supplies.',
+      'You are the owner. Sign in to review the terms, approve orders your assistant sends for approval, and set spending limits:',
+      this.#loginLink(a.email, '/owner'),
+      `Until you do, your assistant can only spend within our default limits: approval needed above ${usd(DEFAULT_POLICY.approval_required_above_cents)}, at most ${usd(DEFAULT_POLICY.monthly_limit_cents)} a month.`,
+      "If you didn't expect this, ignore this email and nothing will be charged.",
+    ]);
+  }
+
+  /** Re-send the owner's sign-in link to the email on file. */
+  resendOwnerInvite(auth) {
+    const a = this.#account(auth.accountId);
+    this.#sendOwnerInvite(a);
+    return { sent_to: a.email, next_step: 'Ask the owner to open the newest Domaru email.' };
+  }
+
+  // ------------------------------------------- owner sign-in (emailed link)
+
+  #loginLink(email, next) {
+    const token = `ln_${randomBytes(24).toString('base64url')}`;
+    const expires = new Date(Date.now() + 30 * 60_000).toISOString();
+    this.db.prepare('INSERT INTO logins (token_hash, email, next, expires_at) VALUES (?, ?, ?, ?)').run(hash(token), email.toLowerCase(), next ?? '/owner', expires);
+    return `${this.publicUrl}/auth/verify?t=${token}`;
+  }
+
+  /** Email a one-time sign-in link. Households never have a password or key. */
+  startSignIn(email, { next = '/owner' } = {}) {
+    if (!isEmail(email)) throw badRequest('invalid_param', 'Enter a valid email address.', { param: 'email' });
+    if (!String(next).startsWith('/') || String(next).startsWith('//')) next = '/owner';
+    const link = this.#loginLink(email, next);
+    this.#mail(null, 'sign_in', email, 'Your Domaru sign-in link', [
+      'Tap to sign in to Domaru. The link works once, for 30 minutes:', link, '',
+      "If you didn't ask for this, ignore this email.",
+    ]);
+    return { sent: true };
+  }
+
+  /**
+   * The emailed link was opened. The email is the owner: sign in to their
+   * household, or start one. Returns a browser session token and where to go next.
+   */
+  finishSignIn(token) {
+    const row = token ? this.db.prepare('SELECT * FROM logins WHERE token_hash = ?').get(hash(String(token))) : null;
+    if (!row || row.used_at || row.expires_at < new Date().toISOString()) {
+      throw badRequest('link_expired', 'This sign-in link has expired or was already used.', { hint: 'Ask for a new one.' });
+    }
+    this.db.prepare('UPDATE logins SET used_at = ? WHERE token_hash = ?').run(new Date().toISOString(), row.token_hash);
+    let a = this.db.prepare('SELECT * FROM accounts WHERE lower(email) = ? ORDER BY created_at DESC, rowid DESC LIMIT 1').get(row.email);
+    if (!a) {
+      const accountId = id('acct');
+      const now = new Date().toISOString();
+      const placeholder = () => hash(`none:${randomBytes(24).toString('hex')}`);
+      this.db.prepare(`INSERT INTO accounts (id, name, email, mode, api_key_hash, owner_key_hash, household_size, policy_json, clock, created_at)
+        VALUES (?, ?, ?, ?, ?, ?, 2, ?, ?, ?)`).run(accountId, 'My household', row.email, this.mode, placeholder(), placeholder(), j({ ...DEFAULT_POLICY }), now, now);
+      this.#emit(accountId, 'account.created', { account_id: accountId, via: 'sign_in' });
+      a = this.db.prepare('SELECT * FROM accounts WHERE id = ?').get(accountId);
+    }
+    if (!a.owner_claimed_at) this.db.prepare('UPDATE accounts SET owner_claimed_at = ? WHERE id = ?').run(new Date().toISOString(), a.id);
+    const session = `os_${randomBytes(24).toString('base64url')}`;
+    this.db.prepare("INSERT INTO sessions (token_hash, account_id, kind, created_at, expires_at) VALUES (?, ?, 'owner', ?, ?)")
+      .run(hash(session), a.id, new Date().toISOString(), new Date(Date.now() + 30 * 86_400_000).toISOString());
+    return { account_id: a.id, session, next: row.next };
+  }
+
+  /** Owner browser session -> owner auth, or null. */
+  ownerSession(session) {
+    if (!session) return null;
+    const row = this.db.prepare("SELECT * FROM sessions WHERE token_hash = ? AND kind = 'owner'").get(hash(String(session)));
+    if (!row || row.expires_at < new Date().toISOString()) return null;
+    return { accountId: row.account_id, role: 'owner' };
+  }
+
+  /** Operator sessions for the admin page (cookie), separate from household sessions. */
+  createAdminSession() {
+    const token = `as_${randomBytes(24).toString('base64url')}`;
+    this.db.prepare("INSERT INTO sessions (token_hash, account_id, kind, created_at, expires_at) VALUES (?, '-', 'admin', ?, ?)")
+      .run(hash(token), new Date().toISOString(), new Date(Date.now() + 12 * 3600_000).toISOString());
+    return token;
+  }
+
+  isAdminSession(token) {
+    if (!token) return false;
+    const row = this.db.prepare("SELECT expires_at FROM sessions WHERE token_hash = ? AND kind = 'admin'").get(hash(String(token)));
+    return !!row && row.expires_at > new Date().toISOString();
+  }
+
+  endSession(session) {
+    if (session) this.db.prepare('DELETE FROM sessions WHERE token_hash = ?').run(hash(String(session)));
+  }
+
+  /** The owner accepts the terms, including automatic renewal. Recorded with the version. */
+  acceptTerms(auth) {
+    if (auth.role !== 'owner') throw forbidden('Only the account owner can accept the terms.');
+    const a = this.#account(auth.accountId);
+    this.db.prepare('UPDATE accounts SET terms_version = ?, terms_accepted_at = ? WHERE id = ?').run(TERMS_VERSION, new Date().toISOString(), a.id);
+    this.#emit(a.id, 'account.terms_accepted', { terms_version: TERMS_VERSION });
+    return this.getAccount(a.id);
+  }
+
+  /** Developers only: a raw owner key for scripting. Households never need one. */
+  createOwnerKey(auth) {
+    if (auth.role !== 'owner') throw forbidden('Only the account owner can create an owner key.');
+    const a = this.#account(auth.accountId);
+    const key = `ok_${a.mode}_${randomBytes(18).toString('base64url')}`;
+    this.db.prepare('UPDATE accounts SET owner_key_hash = ? WHERE id = ?').run(hash(key), a.id);
+    return { owner_key: key, note: 'Shown once. Creating a new one replaces it.' };
+  }
+
+  // ------------------------------------------ Connect Domaru (OAuth for assistants)
+
+  /** RFC 7591 dynamic registration: assistants register themselves once. */
+  registerClient({ client_name, redirect_uris } = {}) {
+    if (!Array.isArray(redirect_uris) || !redirect_uris.length || redirect_uris.some((u) => !okRedirect(u))) {
+      throw badRequest('invalid_redirect_uri', 'redirect_uris must be https URLs (or http://localhost for development).', { param: 'redirect_uris' });
+    }
+    const clientId = `cl_${randomBytes(12).toString('base64url')}`;
+    const name = String(client_name ?? 'An assistant').slice(0, 80);
+    this.db.prepare('INSERT INTO oauth_clients (id, name, redirect_uris_json, created_at) VALUES (?, ?, ?, ?)').run(clientId, name, j(redirect_uris), new Date().toISOString());
+    return { client_id: clientId, client_name: name, redirect_uris, token_endpoint_auth_method: 'none', grant_types: ['authorization_code', 'refresh_token'], response_types: ['code'] };
+  }
+
+  oauthClient(clientId, redirectUri) {
+    const c = clientId ? this.db.prepare('SELECT * FROM oauth_clients WHERE id = ?').get(clientId) : null;
+    if (!c) throw badRequest('invalid_client', 'Unknown client.');
+    if (redirectUri !== undefined && !p(c.redirect_uris_json).includes(redirectUri)) throw badRequest('invalid_redirect_uri', 'redirect_uri is not registered for this client.');
+    return { id: c.id, name: c.name };
+  }
+
+  /** What the Connect page still needs before the owner can tap Allow. */
+  connectChecklist(auth) {
+    const a = this.#account(auth.accountId);
+    const addr = this.db.prepare('SELECT 1 FROM addresses WHERE account_id = ? AND confirmed = 1 LIMIT 1').get(a.id);
+    return {
+      terms: a.terms_version === TERMS_VERSION,
+      address: !!addr,
+      payment_method: !!a.default_payment_method_id,
+      ready: a.terms_version === TERMS_VERSION && !!addr && !!a.default_payment_method_id,
+    };
+  }
+
+  /** The owner tapped Allow. Returns a one-time code for the assistant's redirect. */
+  createAuthCode(auth, { client_id, redirect_uri, code_challenge, code_challenge_method }) {
+    if (auth.role !== 'owner') throw forbidden('Only the account owner can connect an assistant.');
+    this.oauthClient(client_id, redirect_uri);
+    if (code_challenge_method !== 'S256' || !/^[A-Za-z0-9_-]{43,128}$/.test(code_challenge ?? '')) throw badRequest('invalid_request', 'PKCE with S256 is required.');
+    if (!this.connectChecklist(auth).ready) throw conflict('setup_incomplete', 'Finish setting up the household first.');
+    const code = `co_${randomBytes(24).toString('base64url')}`;
+    this.db.prepare('INSERT INTO oauth_codes (code_hash, client_id, account_id, redirect_uri, code_challenge, expires_at) VALUES (?, ?, ?, ?, ?, ?)')
+      .run(hash(code), client_id, auth.accountId, redirect_uri, code_challenge, new Date(Date.now() + 10 * 60_000).toISOString());
+    return code;
+  }
+
+  #issueTokens(accountId, client, grantId) {
+    const access = `dat_${randomBytes(24).toString('base64url')}`;
+    const refresh = `drt_${randomBytes(24).toString('base64url')}`;
+    const expires = new Date(Date.now() + 3600_000).toISOString();
+    if (grantId) {
+      this.db.prepare('UPDATE grants SET access_hash = ?, access_expires_at = ?, refresh_hash = ? WHERE id = ?').run(hash(access), expires, hash(refresh), grantId);
+    } else {
+      this.db.prepare('INSERT INTO grants (id, account_id, client_id, client_name, access_hash, access_expires_at, refresh_hash, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)')
+        .run(id('grant'), accountId, client.id, client.name, hash(access), expires, hash(refresh), new Date().toISOString());
+      this.#emit(accountId, 'assistant.connected', { client_name: client.name });
+    }
+    return { access_token: access, token_type: 'Bearer', expires_in: 3600, refresh_token: refresh, scope: 'shop' };
+  }
+
+  /** Token endpoint: authorization_code (with PKCE) or refresh_token. */
+  oauthToken({ grant_type, code, code_verifier, client_id, redirect_uri, refresh_token } = {}) {
+    const fail = (error, description) => Object.assign(new ApiError(400, error, description), { oauth: { error, error_description: description } });
+    if (grant_type === 'authorization_code') {
+      const row = code ? this.db.prepare('SELECT * FROM oauth_codes WHERE code_hash = ?').get(hash(String(code))) : null;
+      if (!row || row.used_at || row.expires_at < new Date().toISOString() || row.client_id !== client_id || row.redirect_uri !== redirect_uri) throw fail('invalid_grant', 'The code is invalid or expired.');
+      const challenge = createHash('sha256').update(String(code_verifier ?? '')).digest('base64url');
+      this.db.prepare('UPDATE oauth_codes SET used_at = ? WHERE code_hash = ?').run(new Date().toISOString(), row.code_hash);
+      if (!safeEqual(challenge, row.code_challenge)) throw fail('invalid_grant', 'PKCE verification failed.');
+      return this.#issueTokens(row.account_id, this.oauthClient(client_id));
+    }
+    if (grant_type === 'refresh_token') {
+      const g = refresh_token ? this.db.prepare('SELECT * FROM grants WHERE refresh_hash = ?').get(hash(String(refresh_token))) : null;
+      if (!g || g.revoked_at || g.client_id !== client_id) throw fail('invalid_grant', 'The refresh token is invalid or was revoked.');
+      return this.#issueTokens(g.account_id, null, g.id);
+    }
+    throw fail('unsupported_grant_type', 'Use authorization_code or refresh_token.');
+  }
+
+  listGrants(auth) {
+    return this.db.prepare('SELECT * FROM grants WHERE account_id = ? AND revoked_at IS NULL ORDER BY created_at').all(auth.accountId)
+      .map((g) => ({ id: g.id, client_name: g.client_name, connected_at: g.created_at, last_used_at: g.last_used_at }));
+  }
+
+  revokeGrant(auth, grantId) {
+    if (auth.role !== 'owner') throw forbidden('Only the account owner can disconnect an assistant.');
+    const g = this.db.prepare('SELECT * FROM grants WHERE id = ? AND account_id = ?').get(grantId, auth.accountId);
+    if (!g) throw notFound('grant', grantId);
+    this.db.prepare('UPDATE grants SET revoked_at = ? WHERE id = ?').run(new Date().toISOString(), g.id);
+    this.#emit(auth.accountId, 'assistant.disconnected', { client_name: g.client_name });
+    return { revoked: true };
   }
 
   /** Resolve a bearer key to { account, role } where role is 'agent' or 'owner'. */
   authenticate(key) {
-    if (!key) throw unauthorized('Missing API key.', 'Send "Authorization: Bearer ck_test_..." (create one with POST /v1/accounts).');
+    if (!key) throw unauthorized('Missing credentials.', 'Connect Domaru from your assistant, or send "Authorization: Bearer ck_test_..." (developers: POST /v1/accounts).');
     const h = hash(key);
     const agent = this.db.prepare('SELECT id FROM accounts WHERE api_key_hash = ?').get(h);
     if (agent) return { accountId: agent.id, role: 'agent' };
     const owner = this.db.prepare('SELECT id FROM accounts WHERE owner_key_hash = ?').get(h);
     if (owner) return { accountId: owner.id, role: 'owner' };
-    throw unauthorized('Invalid API key.', 'Check the key, or create a new sandbox account with POST /v1/accounts.');
+    // Connected assistants: shop within limits, never approve or change limits.
+    const g = this.db.prepare('SELECT * FROM grants WHERE access_hash = ? AND revoked_at IS NULL').get(h);
+    if (g && g.access_expires_at > new Date().toISOString()) {
+      this.db.prepare('UPDATE grants SET last_used_at = ? WHERE id = ?').run(new Date().toISOString(), g.id);
+      return { accountId: g.account_id, role: 'agent', grantId: g.id };
+    }
+    throw unauthorized('Invalid or expired key.', 'Reconnect Domaru in your assistant, or check the developer key.');
   }
 
   #account(accountId) {
@@ -159,6 +405,9 @@ export class Store {
       fulfillment: this.fulfillment,
       default_payment_method_id: a.default_payment_method_id,
       default_address_id: a.default_address_id,
+      owner: { email: a.email, claimed: !!a.owner_claimed_at, terms_version: a.terms_version, terms_current: a.terms_version === TERMS_VERSION },
+      on_hold: a.hold_reason ? { reason: a.hold_reason, next_step: `Orders are paused. The owner should contact ${this.support.email}.` } : null,
+      support: { email: this.support.email },
       bank_payments: this.#bankStatus(a),
       created_at: a.created_at,
     };
@@ -185,6 +434,15 @@ export class Store {
     const a = this.#account(auth.accountId);
     if (household_size != null && (!Number.isInteger(household_size) || household_size < 1 || household_size > 20)) {
       throw badRequest('invalid_param', 'household_size must be an integer from 1 to 20.', { param: 'household_size' });
+    }
+    if (email != null && email !== a.email) {
+      // Approval requests go to this address, so only the owner may move it.
+      if (auth.role !== 'owner') throw forbidden("Only the account owner can change the owner's email.", 'Ask the owner to change it on their Domaru owner page.');
+      if (!isEmail(email)) throw badRequest('invalid_param', 'email must be an email address.', { param: 'email' });
+      this.#mail(a, 'email_changed', a.email, 'Your Domaru email was changed', [
+        `The owner email for ${a.name} was changed to ${email}. Approval requests and receipts now go there.`,
+        `If you didn't do this, reply to this email or write to ${this.support.email} right away.`,
+      ]);
     }
     this.db.prepare('UPDATE accounts SET household_size = ?, name = ?, email = ? WHERE id = ?')
       .run(household_size ?? a.household_size, name ?? a.name, email ?? a.email, a.id);
@@ -318,13 +576,30 @@ export class Store {
     const a = this.#account(auth.accountId);
     const addrId = id('addr');
     const body = { name, line1, line2: line2 ?? null, city, region, postal_code, phone: phone ?? null, country };
-    this.db.prepare('INSERT INTO addresses (id, account_id, json, created_at) VALUES (?, ?, ?, ?)').run(addrId, a.id, j(body), a.clock);
+    // An agent-added address is unconfirmed: the first order to it waits for the owner.
+    const confirmed = auth.role === 'owner' ? 1 : 0;
+    this.db.prepare('INSERT INTO addresses (id, account_id, json, confirmed, created_at) VALUES (?, ?, ?, ?, ?)').run(addrId, a.id, j(body), confirmed, a.clock);
     if (set_default || !a.default_address_id) this.db.prepare('UPDATE accounts SET default_address_id = ? WHERE id = ?').run(addrId, a.id);
-    return { id: addrId, ...body };
+    this.#emit(a.id, 'address.added', { address_id: addrId, confirmed: !!confirmed });
+    return this.#presentAddress(this.db.prepare('SELECT * FROM addresses WHERE id = ?').get(addrId));
   }
 
   listAddresses(auth) {
-    return this.db.prepare('SELECT * FROM addresses WHERE account_id = ? ORDER BY created_at, rowid').all(auth.accountId).map((x) => ({ id: x.id, ...p(x.json) }));
+    return this.db.prepare('SELECT * FROM addresses WHERE account_id = ? ORDER BY created_at, rowid').all(auth.accountId).map((x) => this.#presentAddress(x));
+  }
+
+  #presentAddress(x) {
+    return {
+      id: x.id, ...p(x.json), confirmed: !!x.confirmed,
+      ...(x.confirmed ? {} : { note: 'The first order to this address waits for the owner to approve it.' }),
+    };
+  }
+
+  confirmAddress(auth, addrId) {
+    if (auth.role !== 'owner') throw forbidden('Only the account owner can confirm an address.', 'The first order to a new address goes to the owner for approval instead.');
+    this.#address(auth.accountId, addrId);
+    this.db.prepare('UPDATE addresses SET confirmed = 1 WHERE id = ?').run(addrId);
+    return this.#presentAddress(this.db.prepare('SELECT * FROM addresses WHERE id = ?').get(addrId));
   }
 
   #address(accountId, addrId) {
@@ -373,13 +648,18 @@ export class Store {
 
   #monthSpend(accountId, today) {
     const month = today.slice(0, 7);
-    const rows = this.db.prepare("SELECT amounts_json FROM orders WHERE account_id = ? AND status IN ('paid', 'payment_pending') AND substr(created_at, 1, 7) = ?").all(accountId, month);
-    return rows.reduce((s, r) => s + p(r.amounts_json).total_cents, 0);
+    // 'pending' counts too: an order mid-charge has already claimed its share of the limit.
+    const rows = this.db.prepare("SELECT amounts_json, refunds_json FROM orders WHERE account_id = ? AND status IN ('pending', 'paid', 'payment_pending') AND substr(created_at, 1, 7) = ?").all(accountId, month);
+    return rows.reduce((s, r) => s + p(r.amounts_json).total_cents - refundedCents(r), 0);
   }
 
-  #policyCheck(account, lines, total) {
+  #policyCheck(account, lines, total, addrId) {
     const policy = p(account.policy_json);
     const reasons = [];
+    const addr = addrId ? this.db.prepare('SELECT confirmed FROM addresses WHERE id = ?').get(addrId) : null;
+    if (addr && !addr.confirmed) {
+      reasons.push({ code: 'new_address', message: 'First order to an address the owner has not confirmed yet.' });
+    }
     if (policy.approval_required_above_cents != null && total > policy.approval_required_above_cents) {
       reasons.push({ code: 'above_approval_threshold', message: `Order total ${total} exceeds approval threshold ${policy.approval_required_above_cents}.` });
     }
@@ -402,7 +682,7 @@ export class Store {
     const norm = this.#normalizeItems(items);
     const pmId = payment_method_id ?? account.default_payment_method_id;
     const priced = this.price(norm, { subscription, bank: pmId ? this.#pm(account.id, pmId).type === 'bank' : false });
-    const reasons = this.#policyCheck(account, priced.lines, priced.amounts.total_cents);
+    const reasons = this.#policyCheck(account, priced.lines, priced.amounts.total_cents, account.default_address_id);
     const out = {
       ...priced,
       subscription,
@@ -469,25 +749,52 @@ export class Store {
 
   /** fulfillOn: the day the order may ship. Bank debits are charged ahead of it so they clear first. */
   async #placeOrder(account, { items, addrId, pmId, subscriptionId, fulfillOn }) {
+    this.#requireNotOnHold(account);
     const priced = this.price(items, { subscription: !!subscriptionId, bank: this.#pm(account.id, pmId).type === 'bank' });
     const orderId = id('ord');
     const now = account.clock;
+    // Check the limits and record the order in one synchronous step (no await in
+    // between), so simultaneous orders each see the others' spend.
+    const reasons = this.#policyCheck(account, priced.lines, priced.amounts.total_cents, addrId);
     this.db.prepare(`INSERT INTO orders (id, account_id, subscription_id, status, lines_json, amounts_json, address_id, payment_method_id, charges_json, fulfill_on, created_at, updated_at)
-      VALUES (?, ?, ?, 'pending', ?, ?, ?, ?, '[]', ?, ?, ?)`).run(orderId, account.id, subscriptionId, j(priced.lines), j(priced.amounts), addrId, pmId, fulfillOn, now, now);
-    const reasons = this.#policyCheck(account, priced.lines, priced.amounts.total_cents);
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, '[]', ?, ?, ?)`).run(orderId, account.id, subscriptionId, reasons.length ? 'requires_approval' : 'pending', j(priced.lines), j(priced.amounts), addrId, pmId, fulfillOn, now, now);
     if (reasons.length) {
-      const apprId = id('appr');
-      this.db.prepare(`INSERT INTO approvals (id, account_id, order_id, status, reasons_json, amount_cents, created_at) VALUES (?, ?, ?, 'pending', ?, ?, ?)`)
-        .run(apprId, account.id, orderId, j(reasons), priced.amounts.total_cents, now);
-      this.db.prepare("UPDATE orders SET status = 'requires_approval', approval_id = ? WHERE id = ?").run(apprId, orderId);
-      this.#emit(account.id, 'approval.requested', { approval_id: apprId, order_id: orderId, reasons });
+      this.#requestApproval(account, orderId, reasons, priced);
       return this.getOrder({ accountId: account.id }, orderId);
     }
     await this.#chargeAndFulfill(account, orderId);
     return this.getOrder({ accountId: account.id }, orderId);
   }
 
+  #requestApproval(account, orderId, reasons, priced) {
+    const apprId = id('appr');
+    const token = `at_${randomBytes(24).toString('base64url')}`;
+    this.db.prepare(`INSERT INTO approvals (id, account_id, order_id, status, reasons_json, amount_cents, token_hash, created_at) VALUES (?, ?, ?, 'pending', ?, ?, ?, ?)`)
+      .run(apprId, account.id, orderId, j(reasons), priced.amounts.total_cents, hash(token), account.clock);
+    this.db.prepare('UPDATE orders SET approval_id = ? WHERE id = ?').run(apprId, orderId);
+    this.#emit(account.id, 'approval.requested', { approval_id: apprId, order_id: orderId, reasons });
+    const addr = p(this.db.prepare('SELECT json FROM orders o JOIN addresses a ON a.id = o.address_id WHERE o.id = ?').get(orderId).json);
+    this.#mail(account, 'approval_requested', account.email, `Approve ${usd(priced.amounts.total_cents)} for Domaru?`, [
+      `Your assistant wants to order ${usd(priced.amounts.total_cents)} of supplies for ${account.name}. It needs your OK because:`,
+      ...reasons.map((r) => `- ${r.message}`),
+      '',
+      ...priced.lines.map((l) => `${l.quantity} x ${l.name}  ${usd(l.line_total_cents)}`),
+      `Ships to: ${[addr.name, addr.line1, addr.line2, `${addr.city}, ${addr.region} ${addr.postal_code}`].filter(Boolean).join(', ')}`,
+      '',
+      'Approve or decline (nothing is charged unless you approve):',
+      `${this.publicUrl}/owner/approvals/${apprId}?t=${token}`,
+    ]);
+    return apprId;
+  }
+
+  #requireNotOnHold(account) {
+    if (account.hold_reason) {
+      throw conflict('account_on_hold', 'Orders on this account are paused.', { hint: `Ask the owner to contact ${this.support.email}.` });
+    }
+  }
+
   async #chargeAndFulfill(account, orderId) {
+    this.db.prepare("UPDATE orders SET status = 'pending' WHERE id = ?").run(orderId);
     const order = this.db.prepare('SELECT * FROM orders WHERE id = ?').get(orderId);
     const pm = this.#pm(account.id, order.payment_method_id);
     const amounts = p(order.amounts_json);
@@ -514,6 +821,11 @@ export class Store {
     if (result.status !== 'succeeded') {
       this.db.prepare("UPDATE orders SET status = 'payment_failed', charges_json = ?, updated_at = ? WHERE id = ?").run(j(charges), account.clock, orderId);
       this.#emit(account.id, 'order.payment_failed', { order_id: orderId, failure_code: result.failure_code });
+      const a = this.#account(account.id);
+      this.#mail(a, 'payment_failed', a.email, "Your Domaru payment didn't go through", [
+        `We couldn't collect ${usd(charges.at(-1).amount_cents)} for order ${orderId} (${String(result.failure_code ?? 'declined').replace(/_/g, ' ')}).`,
+        'Nothing has been bought or shipped. Your assistant can retry with another card or bank account, or you can ask it to.',
+      ]);
       return false;
     }
     this.db.prepare("UPDATE orders SET status = 'paid', charges_json = ?, updated_at = ? WHERE id = ?").run(j(charges), account.clock, orderId);
@@ -571,6 +883,10 @@ export class Store {
       payment_method_id: o.payment_method_id,
       charges: p(o.charges_json),
       ship_date: o.fulfill_on,
+      refunds: p(o.refunds_json ?? '[]'),
+      refunded_cents: refundedCents(o),
+      resend_of: o.resend_of ?? null,
+      dispute: p(o.dispute_json ?? null),
       approval: appr ? this.#presentApproval(appr) : null,
       shipment: s ? {
         id: s.id, status: s.status, carrier: s.carrier || null, tracking_number: s.tracking_number || null,
@@ -594,7 +910,7 @@ export class Store {
     return {
       id: a.id, status: a.status, order_id: a.order_id, amount_cents: a.amount_cents,
       reasons: p(a.reasons_json), created_at: a.created_at, decided_at: a.decided_at,
-      how_to_resolve: a.status === 'pending' ? 'The account owner approves or rejects with POST /v1/approvals/{id}/approve|reject using the owner_key. Agents cannot approve.' : undefined,
+      how_to_resolve: a.status === 'pending' ? 'The owner was emailed an Approve / Decline link. Tell them it is waiting. Agents cannot approve.' : undefined,
     };
   }
 
@@ -607,6 +923,8 @@ export class Store {
     this.db.prepare('UPDATE approvals SET status = ?, decided_at = ? WHERE id = ?').run(decision === 'approve' ? 'approved' : 'rejected', account.clock, a.id);
     this.#emit(account.id, `approval.${decision === 'approve' ? 'approved' : 'rejected'}`, { approval_id: a.id, order_id: a.order_id });
     if (decision === 'approve') {
+      // Approving an order to a new address confirms the address too.
+      this.db.prepare('UPDATE addresses SET confirmed = 1 WHERE id = (SELECT address_id FROM orders WHERE id = ?)').run(a.order_id);
       await this.#chargeAndFulfill(account, a.order_id);
       this.#syncSubscriptionAfterPayment(account, a.order_id);
     } else {
@@ -614,6 +932,22 @@ export class Store {
       this.#emit(account.id, 'order.canceled', { order_id: a.order_id, reason: 'approval_rejected' });
     }
     return this.getOrder(auth, a.order_id);
+  }
+
+  /** The owner taps Approve or Decline in the email; the link carries a one-time token for that approval. */
+  async decideApprovalByToken(approvalId, token, decision) {
+    const a = this.db.prepare('SELECT * FROM approvals WHERE id = ?').get(approvalId);
+    if (!a || !a.token_hash || !token || !safeEqual(a.token_hash, hash(String(token)))) throw notFound('approval', approvalId, 'Open the link from the newest approval email.');
+    return this.decideApproval({ accountId: a.account_id, role: 'owner' }, approvalId, decision);
+  }
+
+  /** What the approval email link shows, if the token matches. */
+  approvalForToken(approvalId, token) {
+    const a = this.db.prepare('SELECT * FROM approvals WHERE id = ?').get(approvalId);
+    if (!a || !a.token_hash || !token || !safeEqual(a.token_hash, hash(String(token)))) return null;
+    const auth = { accountId: a.account_id, role: 'owner' };
+    const order = this.getOrder(auth, a.order_id);
+    return { approval: this.#presentApproval(a), order, ship_to: this.#presentAddress(this.#address(a.account_id, order.address_id)), account: this.#account(a.account_id).name };
   }
 
   /** The agent can take back an order it asked the owner to approve. It can never approve one. */
@@ -626,6 +960,273 @@ export class Store {
     this.db.prepare("UPDATE orders SET status = 'canceled', updated_at = ? WHERE id = ?").run(account.clock, o.id);
     this.#emit(account.id, 'order.canceled', { order_id: o.id, reason });
     return this.getOrder(auth, o.id);
+  }
+
+  // ------------------------------------------- cancellations, refunds, problems
+
+  #orderRow(accountId, orderId) {
+    const o = this.db.prepare('SELECT * FROM orders WHERE id = ? AND account_id = ?').get(orderId, accountId);
+    if (!o) throw notFound('order', orderId, 'List orders with GET /v1/orders.');
+    return o;
+  }
+
+  /**
+   * Cancel an order any time before it has been bought from the retailer. A
+   * paid order is refunded in full automatically.
+   */
+  async cancelOrder(auth, orderId, { reason } = {}) {
+    const account = this.#account(auth.accountId);
+    const o = this.#orderRow(account.id, orderId);
+    const why = reason ?? `canceled_by_${auth.role}`;
+    if (o.status === 'requires_approval') return this.withdrawOrder(auth, o.id, why);
+    if (o.status === 'payment_failed' || o.status === 'payment_pending') {
+      // A pending bank debit that later clears is refunded by the scheduler.
+      this.db.prepare("UPDATE orders SET status = 'canceled', updated_at = ? WHERE id = ?").run(account.clock, o.id);
+      if (o.subscription_id) {
+        const sub = this.db.prepare('SELECT * FROM subscriptions WHERE id = ?').get(o.subscription_id);
+        if (sub.status === 'past_due' && sub.failed_order_id === o.id) this.#touch(account, sub.id, { status: 'active', failed_order_id: null, status_reason: null });
+      }
+      this.#emit(account.id, 'order.canceled', { order_id: o.id, reason: why });
+      return this.getOrder(auth, o.id);
+    }
+    if (o.status !== 'paid') throw conflict('order_not_cancelable', `Order is ${o.status}.`);
+    const sh = this.db.prepare('SELECT * FROM shipments WHERE order_id = ?').get(o.id);
+    if (sh && !['awaiting_fulfillment', 'processing'].includes(sh.status)) {
+      throw conflict('order_already_bought', 'This order has already been bought from the retailer, so it can no longer be canceled.', { hint: 'If something is wrong with it, use report_problem (POST /v1/orders/{id}/problems).' });
+    }
+    if (sh) this.db.prepare("UPDATE shipments SET status = 'canceled' WHERE id = ?").run(sh.id);
+    this.db.prepare("UPDATE orders SET status = 'canceled', updated_at = ? WHERE id = ?").run(account.clock, o.id);
+    this.#emit(account.id, 'order.canceled', { order_id: o.id, reason: why });
+    const refundable = this.#refundable(o);
+    if (refundable > 0) await this.#refund(account, o.id, refundable, 'canceled_before_purchase');
+    return this.getOrder(auth, o.id);
+  }
+
+  #refundable(o) {
+    const paid = p(o.charges_json).filter((c) => c.status === 'succeeded').reduce((s, c) => s + c.amount_cents, 0);
+    return paid - refundedCents(o);
+  }
+
+  async #refund(account, orderId, amountCents, reason, caseId = null) {
+    const o = this.db.prepare('SELECT * FROM orders WHERE id = ?').get(orderId);
+    const refundable = this.#refundable(o);
+    if (!Number.isInteger(amountCents) || amountCents < 1 || amountCents > refundable) {
+      throw badRequest('invalid_param', `amount_cents must be from 1 to ${refundable}.`, { param: 'amount_cents' });
+    }
+    const charge = p(o.charges_json).filter((c) => c.status === 'succeeded').at(-1);
+    const n = p(o.refunds_json).length + 1;
+    const r = await this.payments.refund({ ref: charge.provider_ref, amountCents, orderId, n, reason });
+    const rec = { id: id('re'), amount_cents: amountCents, reason, case_id: caseId, status: r.status, provider_ref: r.ref, created_at: this.#account(account.id).clock };
+    const latest = this.db.prepare('SELECT * FROM orders WHERE id = ?').get(orderId);
+    const refunds = [...p(latest.refunds_json), rec];
+    const full = r.status === 'succeeded' && this.#refundable({ ...latest, refunds_json: j(refunds) }) === 0;
+    this.db.prepare(`UPDATE orders SET refunds_json = ?, status = CASE WHEN ? AND status = 'paid' THEN 'refunded' ELSE status END, updated_at = ? WHERE id = ?`)
+      .run(j(refunds), full ? 1 : 0, rec.created_at, orderId);
+    if (r.status !== 'succeeded') throw new ApiError(502, 'refund_failed', 'The payment provider did not accept the refund.', { hint: 'Try again, or refund it in the Stripe dashboard.' });
+    this.#emit(account.id, 'order.refunded', { order_id: orderId, amount_cents: amountCents, reason, case_id: caseId });
+    const a = this.#account(account.id);
+    this.#mail(a, 'refund', a.email, `Refund of ${usd(amountCents)} from Domaru`, [
+      `We refunded ${usd(amountCents)} for order ${orderId} to the card or bank account you paid with.`,
+      'It usually shows up in 5 to 10 days, depending on your bank.',
+    ]);
+    return rec;
+  }
+
+  /** Operator only (admin page): full or partial refund through the payment provider. */
+  async refundOrder(orderId, { amount_cents, reason = 'operator' } = {}) {
+    const o = this.db.prepare('SELECT * FROM orders WHERE id = ?').get(orderId);
+    if (!o) throw notFound('order', orderId);
+    const amount = amount_cents == null || amount_cents === '' ? this.#refundable(o) : Number(amount_cents);
+    if (this.#refundable(o) < 1) throw conflict('nothing_to_refund', 'Nothing left to refund on this order.');
+    await this.#refund(this.#account(o.account_id), o.id, amount, reason || 'operator');
+    return this.#presentOrder(this.db.prepare('SELECT * FROM orders WHERE id = ?').get(orderId));
+  }
+
+  static PROBLEM_KINDS = ['never_arrived', 'damaged', 'wrong_item', 'missing_item', 'charged_wrong', 'other'];
+  static CLAIM_KINDS = ['never_arrived', 'damaged', 'missing_item'];
+
+  /** Agents (and owners) report a problem with an order. Only the operator moves money. */
+  reportProblem(auth, orderId, { kind, note, photo_url, skus, preferred } = {}, reportedBy = auth.role) {
+    const account = this.#account(auth.accountId);
+    const o = this.#orderRow(account.id, orderId);
+    if (!Store.PROBLEM_KINDS.includes(kind)) throw badRequest('invalid_param', `kind must be one of: ${Store.PROBLEM_KINDS.join(', ')}.`, { param: 'kind' });
+    if (!['paid', 'refunded'].includes(o.status)) {
+      throw conflict('order_not_reportable', `Order is ${o.status}.`, { hint: o.status === 'requires_approval' || o.status === 'payment_pending' ? 'Nothing has been bought yet; cancel_order instead.' : undefined });
+    }
+    if (preferred != null && !['refund', 'resend'].includes(preferred)) throw badRequest('invalid_param', "preferred must be 'refund' or 'resend'.", { param: 'preferred' });
+    if (photo_url != null && !/^https:\/\/\S+$/.test(photo_url)) throw badRequest('invalid_param', 'photo_url must be an https link.', { param: 'photo_url' });
+    const lines = p(o.lines_json);
+    if (skus != null && (!Array.isArray(skus) || skus.some((sku) => !lines.some((l) => l.sku === sku)))) {
+      throw badRequest('invalid_param', 'skus must list SKUs from this order.', { param: 'skus', hint: `This order has: ${lines.map((l) => l.sku).join(', ')}.` });
+    }
+    const open = this.db.prepare("SELECT * FROM cases WHERE order_id = ? AND kind = ? AND status = 'open'").get(o.id, kind);
+    if (open) return this.#presentCase(open);
+
+    const affected = skus?.length ? lines.filter((l) => skus.includes(l.sku)) : lines;
+    const value = affected.reduce((sum, l) => sum + l.line_total_cents, 0);
+    const since = addDays(dateOf(account.clock), -this.support.claim_window_days);
+    const prior = this.db.prepare(`SELECT COUNT(*) AS n FROM cases WHERE account_id = ? AND kind IN (${Store.CLAIM_KINDS.map(() => '?').join(', ')}) AND substr(created_at, 1, 10) >= ?`)
+      .get(account.id, ...Store.CLAIM_KINDS, since).n;
+    let proof = null;
+    if (Store.CLAIM_KINDS.includes(kind) && prior >= this.support.claim_limit) proof = 'repeat_claims';
+    else if (['never_arrived', 'damaged', 'missing_item', 'wrong_item'].includes(kind) && value > this.support.no_questions_refund_cents) proof = 'over_limit';
+
+    const caseId = id('case');
+    this.db.prepare(`INSERT INTO cases (id, account_id, order_id, kind, note, photo_url, skus_json, preferred, value_cents, needs_proof, proof_reason, status, reported_by, created_at, updated_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'open', ?, ?, ?)`).run(caseId, account.id, o.id, kind, note ?? null, photo_url ?? null, j(affected.map((l) => l.sku)), preferred ?? null,
+      value, proof ? 1 : 0, proof, reportedBy, account.clock, account.clock);
+    this.#emit(account.id, 'case.opened', { case_id: caseId, order_id: o.id, kind });
+    const c = this.#presentCase(this.db.prepare('SELECT * FROM cases WHERE id = ?').get(caseId));
+    this.#mailSupport('case_opened', `[${kind.replace(/_/g, ' ')}] ${account.name}, order ${o.id}`, [
+      `${account.name} (${account.email}) reported: ${kind.replace(/_/g, ' ')}${reportedBy === 'operator' ? ' (marked by you)' : ` (via ${reportedBy})`}.`,
+      `Items: ${affected.map((l) => `${l.quantity} x ${l.name}`).join('; ')} (${usd(value)})`,
+      note ? `Note: ${note}` : null, photo_url ? `Photo: ${photo_url}` : null, preferred ? `They prefer a ${preferred}.` : null,
+      proof ? `Proof needed first: ${proof === 'repeat_claims' ? `${prior} claims in ${this.support.claim_window_days} days` : `over ${usd(this.support.no_questions_refund_cents)}`}.` : 'Within the no-questions limit: refund or resend.',
+      `Case ${caseId}: ${this.publicUrl}/admin/orders/${o.id}`,
+    ].filter(Boolean));
+    if (reportedBy !== 'operator') {
+      this.#mail(account, 'case_opened', account.email, `We're on it: your Domaru order ${o.id}`, [
+        `Your assistant told us about a problem (${kind.replace(/_/g, ' ')}).`, c.what_happens_next, 'Reply to this email if there is anything to add.',
+      ]);
+    }
+    return c;
+  }
+
+  listCases(auth, { status } = {}) {
+    const rows = status
+      ? this.db.prepare('SELECT * FROM cases WHERE account_id = ? AND status = ? ORDER BY created_at DESC, rowid DESC').all(auth.accountId, status)
+      : this.db.prepare('SELECT * FROM cases WHERE account_id = ? ORDER BY created_at DESC, rowid DESC').all(auth.accountId);
+    return rows.map((c) => this.#presentCase(c));
+  }
+
+  getCase(auth, caseId) {
+    const c = this.db.prepare('SELECT * FROM cases WHERE id = ? AND account_id = ?').get(caseId, auth.accountId);
+    if (!c) throw notFound('case', caseId, 'List cases with GET /v1/cases.');
+    return this.#presentCase(c);
+  }
+
+  #presentCase(c) {
+    const proof = c.needs_proof
+      ? (c.kind === 'damaged' ? ' Because of the amount or recent claims, we need a photo first: pass photo_url or reply to our email with one.' : ' Because of the amount or recent claims, we check the carrier\'s delivery record first.')
+      : '';
+    const next = {
+      never_arrived: "Packages often turn up within a day at a neighbor's door or in the mailbox. If it still hasn't, we refund or resend it, the household's choice.",
+      damaged: 'We refund or resend the damaged items. No need to send anything back.',
+      wrong_item: 'We send the right item. Keep the wrong one; no need to send it back.',
+      missing_item: 'Big orders sometimes come in two boxes. If the item is not in a second box, we refund or resend it.',
+      charged_wrong: 'We check the charge and refund anything extra.',
+      other: `Our support team will reply by email within one business day (${this.support.email}).`,
+    }[c.kind];
+    const done = {
+      resend_sent: `A replacement is on the way (order ${c.resend_order_id}).`,
+      refunded: `Refunded ${usd(c.refund_cents ?? 0)} to the original payment method. It shows up in 5 to 10 days.`,
+      closed: c.resolution ?? 'Closed.',
+    }[c.status];
+    return {
+      id: c.id, order_id: c.order_id, kind: c.kind, status: c.status, note: c.note, photo_url: c.photo_url, skus: p(c.skus_json),
+      preferred: c.preferred, needs_proof: !!c.needs_proof, resolution: c.resolution, resend_order_id: c.resend_order_id, refund_cents: c.refund_cents,
+      what_happens_next: done ?? next + proof, created_at: c.created_at, updated_at: c.updated_at,
+    };
+  }
+
+  /** Operator: open cases across all accounts, oldest first. */
+  listOpenCases() {
+    return this.db.prepare("SELECT c.*, a.name AS account_name, a.email AS account_email FROM cases c JOIN accounts a ON a.id = c.account_id WHERE c.status = 'open' ORDER BY c.created_at, c.rowid")
+      .all().map((c) => ({ ...this.#presentCase(c), account: { id: c.account_id, name: c.account_name, email: c.account_email }, value_cents: c.value_cents, proof_reason: c.proof_reason, reported_by: c.reported_by }));
+  }
+
+  /** Operator: settle a case with a refund, a free resend, or by closing it. */
+  async resolveCase(caseId, { action, amount_cents, note } = {}) {
+    const c = this.db.prepare('SELECT * FROM cases WHERE id = ?').get(caseId);
+    if (!c) throw notFound('case', caseId);
+    if (c.status !== 'open') throw conflict('case_closed', `Case is already ${c.status}.`);
+    const account = this.#account(c.account_id);
+    const fields = { resolution: note || null };
+    if (action === 'refund') {
+      const o = this.db.prepare('SELECT * FROM orders WHERE id = ?').get(c.order_id);
+      const amount = amount_cents == null || amount_cents === '' ? Math.min(c.value_cents, this.#refundable(o)) : Number(amount_cents);
+      await this.#refund(account, c.order_id, amount, `case_${c.kind}`, c.id);
+      Object.assign(fields, { status: 'refunded', refund_cents: amount });
+    } else if (action === 'resend') {
+      const resend = this.#resend(account, c.order_id, p(c.skus_json));
+      Object.assign(fields, { status: 'resend_sent', resend_order_id: resend });
+    } else if (action === 'close') {
+      fields.status = 'closed';
+    } else {
+      throw badRequest('invalid_param', "action must be 'refund', 'resend' or 'close'.", { param: 'action' });
+    }
+    const keys = Object.keys(fields);
+    this.db.prepare(`UPDATE cases SET ${keys.map((k) => `${k} = ?`).join(', ')}, updated_at = ? WHERE id = ?`).run(...keys.map((k) => fields[k]), account.clock, c.id);
+    const out = this.#presentCase(this.db.prepare('SELECT * FROM cases WHERE id = ?').get(c.id));
+    this.#emit(account.id, 'case.updated', { case_id: c.id, status: out.status });
+    if (action !== 'refund') this.#mail(account, 'case_updated', account.email, `Update on your Domaru order ${c.order_id}`, [out.what_happens_next]);
+    return out;
+  }
+
+  /** A free copy of some or all of an order's items, back in the fulfillment queue. */
+  #resend(account, orderId, skus) {
+    const o = this.db.prepare('SELECT * FROM orders WHERE id = ?').get(orderId);
+    const lines = p(o.lines_json).filter((l) => !skus?.length || skus.includes(l.sku)).map((l) => ({ ...l, unit_price_cents: 0, line_total_cents: 0 }));
+    const newId = id('ord');
+    const amounts = { subtotal_cents: 0, discount_cents: 0, bank_discount_cents: 0, shipping_cents: 0, tax_cents: 0, total_cents: 0, currency: 'usd' };
+    this.db.prepare(`INSERT INTO orders (id, account_id, subscription_id, status, lines_json, amounts_json, address_id, payment_method_id, charges_json, fulfill_on, resend_of, created_at, updated_at)
+      VALUES (?, ?, NULL, 'paid', ?, ?, ?, ?, '[]', ?, ?, ?, ?)`).run(newId, account.id, j(lines), j(amounts), o.address_id, o.payment_method_id, dateOf(account.clock), o.id, account.clock, account.clock);
+    this.#emit(account.id, 'order.resend_created', { order_id: newId, resend_of: o.id });
+    this.#ship(account, newId);
+    return newId;
+  }
+
+  // --------------------------------------------------- disputes and holds
+
+  /** Stripe webhook events, already signature-checked by the HTTP layer. */
+  async handleStripeEvent(event) {
+    const obj = event?.data?.object ?? {};
+    const orderFor = (pi) => (pi ? this.db.prepare("SELECT o.* FROM orders o, json_each(o.charges_json) c WHERE json_extract(c.value, '$.provider_ref') = ?").get(pi) : null);
+    switch (event?.type) {
+      case 'checkout.session.completed':
+        if (obj.mode !== 'setup') return { handled: false };
+        try {
+          await this.completeCardSetup(obj.id);
+        } catch { /* already recorded via the return page, or incomplete */ }
+        return { handled: true };
+      case 'payment_intent.succeeded':
+      case 'payment_intent.payment_failed': {
+        const o = orderFor(obj.id);
+        if (o) await this.#runDue(o.account_id);
+        return { handled: !!o };
+      }
+      case 'charge.dispute.created':
+      case 'charge.dispute.closed':
+      case 'charge.dispute.updated': {
+        const o = orderFor(typeof obj.payment_intent === 'string' ? obj.payment_intent : obj.payment_intent?.id);
+        if (!o) return { handled: false };
+        const dispute = { id: obj.id, reason: obj.reason ?? null, amount_cents: obj.amount ?? null, status: obj.status ?? null, updated_at: new Date().toISOString() };
+        this.db.prepare('UPDATE orders SET dispute_json = ? WHERE id = ?').run(j(dispute), o.id);
+        const account = this.#account(o.account_id);
+        if (event.type === 'charge.dispute.created') {
+          // One chargeback pauses the household until it is sorted out.
+          this.db.prepare('UPDATE accounts SET hold_reason = ? WHERE id = ?').run(`chargeback on order ${o.id}`, o.account_id);
+          this.#emit(o.account_id, 'account.on_hold', { reason: 'chargeback', order_id: o.id });
+          this.#mailSupport('dispute', `Chargeback: ${account.name}, order ${o.id} (${usd(obj.amount ?? 0)})`, [
+            `${account.name} (${account.email}) disputed order ${o.id}: ${obj.reason ?? 'no reason given'}.`,
+            'The account is on hold: no new orders or renewals until you release it.',
+            'If the complaint is real, accept it in Stripe. Otherwise answer it in Stripe with the order, the delivery tracking and the owner approval if there was one.',
+            `${this.publicUrl}/admin/orders/${o.id}`,
+          ]);
+        }
+        return { handled: true };
+      }
+      default:
+        return { handled: false };
+    }
+  }
+
+  /** Operator: lift a hold once a chargeback or other issue is resolved. */
+  releaseHold(accountId) {
+    const a = this.#account(accountId);
+    this.db.prepare('UPDATE accounts SET hold_reason = NULL WHERE id = ?').run(a.id);
+    this.#emit(a.id, 'account.hold_released', {});
+    return this.getAccount(a.id);
   }
 
   // ------------------------------------------------------- subscriptions
@@ -649,6 +1250,15 @@ export class Store {
     this.db.prepare(`INSERT INTO subscriptions (id, account_id, status, items_json, cadence_days, next_order_date, address_id, payment_method_id, metadata_json, created_at, updated_at)
       VALUES (?, ?, 'active', ?, ?, ?, ?, ?, ?, ?, ?)`).run(subId, account.id, j(norm), cadence_days, start_date ?? today, addrId, pmId, j(metadata), account.clock, account.clock);
     this.#emit(account.id, 'subscription.created', { subscription_id: subId });
+    const priced = this.price(norm, { subscription: true, bank: this.#pm(account.id, pmId).type === 'bank' });
+    this.#mail(account, 'subscription_started', account.email, 'Your Domaru subscription has started', [
+      `Your assistant started a subscription for ${account.name}. It renews automatically every ${cadence_days} days until you or your assistant cancel it.`,
+      '',
+      ...priced.lines.map((l) => `${l.quantity} x ${l.name}  ${usd(l.line_total_cents)}`),
+      `Each delivery: about ${usd(priced.amounts.total_cents)} including tax and shipping. First delivery ships ${start_date ?? today}.`,
+      '',
+      `To pause, skip or cancel, ask your assistant, or write to ${this.support.email} and we'll do it for you. Prices can change; we'll email you at least 7 days before any increase.`,
+    ]);
     await this.#runDue(account.id);
     return this.getSubscription(auth, subId);
   }
@@ -826,18 +1436,26 @@ export class Store {
     }
 
     // Bank debits started earlier: see whether they cleared or bounced.
-    for (const o of this.db.prepare("SELECT * FROM orders WHERE account_id = ? AND status = 'payment_pending' ORDER BY created_at, rowid").all(accountId)) {
+    const pending = this.db.prepare(`SELECT * FROM orders WHERE account_id = ? AND (status = 'payment_pending'
+      OR (status = 'canceled' AND json_extract(charges_json, '$[#-1].status') = 'pending')) ORDER BY created_at, rowid`).all(accountId);
+    for (const o of pending) {
       const charges = p(o.charges_json);
       const last = charges.at(-1);
       const pm = this.#pm(accountId, last.payment_method_id);
       const result = await this.payments.checkCharge({ ref: last.provider_ref, pmRef: pm.token, chargedOn: dateOf(last.created_at), today });
       if (result.status === 'pending') continue;
       charges[charges.length - 1] = { ...last, status: result.status, failure_code: result.failure_code, settled_at: account.clock };
+      if (o.status === 'canceled') {
+        // Canceled while the debit was in flight: give the money straight back.
+        this.db.prepare('UPDATE orders SET charges_json = ? WHERE id = ?').run(j(charges), o.id);
+        if (result.status === 'succeeded') await this.#refund(account, o.id, last.amount_cents, 'canceled_before_purchase');
+        continue;
+      }
       this.#settle(account, o.id, charges, result);
       this.#syncSubscriptionAfterPayment(this.#account(accountId), o.id);
     }
 
-    const subs = this.db.prepare("SELECT s.*, pm.type AS pm_type FROM subscriptions s LEFT JOIN payment_methods pm ON pm.id = s.payment_method_id WHERE s.account_id = ? AND s.status = 'active'").all(accountId);
+    const subs = account.hold_reason ? [] : this.db.prepare("SELECT s.*, pm.type AS pm_type FROM subscriptions s LEFT JOIN payment_methods pm ON pm.id = s.payment_method_id WHERE s.account_id = ? AND s.status = 'active'").all(accountId);
     for (const s of subs.filter((x) => this.#chargeDate(x.next_order_date, x.pm_type === 'bank') <= today)) {
       const shipOn = s.next_order_date < today ? today : s.next_order_date;
       // Claim this renewal before charging so overlapping runs never order twice.
@@ -914,33 +1532,92 @@ export class Store {
 
   /** Paid orders the operator still has to buy and ship, oldest first. */
   listFulfillmentQueue({ status = 'awaiting_fulfillment' } = {}) {
-    return this.db.prepare(`SELECT o.*, s.status AS shipment_status, a.name AS account_name, a.email AS account_email
-      FROM shipments s JOIN orders o ON o.id = s.order_id JOIN accounts a ON a.id = o.account_id
-      WHERE s.status = ? ORDER BY o.created_at, o.rowid`).all(status).map((o) => {
-      const order = this.#presentOrder(o);
-      return {
-        ...order,
-        // Operator-only: the retail listing to buy for each line (never shown to agents).
-        lines: order.lines.map((l) => ({ ...l, source: this.products.get(l.sku)?.source ?? null })),
-        account: { id: o.account_id, name: o.account_name, email: o.account_email },
-        ship_to: p(this.db.prepare('SELECT json FROM addresses WHERE id = ?').get(o.address_id).json),
-      };
-    });
+    return this.db.prepare(`SELECT o.* FROM shipments s JOIN orders o ON o.id = s.order_id
+      WHERE s.status = ? ORDER BY o.created_at, o.rowid`).all(status).map((o) => this.#operatorOrder(o));
+  }
+
+  /** Operator view of one order: Walmart listings, ship-to, account, cases. */
+  #operatorOrder(o) {
+    const order = this.#presentOrder(o);
+    const a = this.db.prepare('SELECT * FROM accounts WHERE id = ?').get(o.account_id);
+    const today = dateOf(this.#account(o.account_id).clock);
+    const sh = this.db.prepare('SELECT * FROM shipments WHERE order_id = ?').get(o.id);
+    return {
+      ...order,
+      // Operator-only: the retail listing to buy for each line (never shown to agents).
+      lines: order.lines.map((l) => ({ ...l, source: this.products.get(l.sku)?.source ?? null })),
+      account: { id: a.id, name: a.name, email: a.email, hold_reason: a.hold_reason },
+      ship_to: p(this.db.prepare('SELECT json FROM addresses WHERE id = ?').get(o.address_id).json),
+      shipment: order.shipment && {
+        ...order.shipment,
+        retailer_order_id: sh.retailer_order_id, retailer_canceled_at: sh.retailer_canceled_at, problem: sh.problem,
+        late: !['delivered', 'canceled'].includes(sh.status) && sh.estimated_delivery_date < today,
+      },
+      cases: this.db.prepare('SELECT * FROM cases WHERE order_id = ? ORDER BY created_at').all(o.id).map((c) => this.#presentCase(c)),
+      refundable_cents: this.#refundable(o),
+    };
+  }
+
+  adminOrder(orderId) {
+    const o = this.db.prepare('SELECT * FROM orders WHERE id = ?').get(orderId);
+    if (!o) throw notFound('order', orderId);
+    return this.#operatorOrder(o);
+  }
+
+  /** Bought or due but past the expected delivery date with no delivered mark. */
+  listLate() {
+    return this.db.prepare("SELECT o.* FROM shipments s JOIN orders o ON o.id = s.order_id WHERE s.status IN ('awaiting_fulfillment', 'placed', 'shipped') ORDER BY s.estimated_delivery_date")
+      .all().map((o) => this.#operatorOrder(o)).filter((o) => o.shipment.late);
   }
 
   #operatorShipment(orderId, from) {
     const sh = this.db.prepare('SELECT * FROM shipments WHERE order_id = ?').get(orderId);
     if (!sh) throw notFound('shipment', orderId, 'Only paid orders have shipments.');
-    if (sh.status !== from) throw conflict('invalid_shipment_state', `Shipment is ${sh.status}, expected ${from}.`);
+    const ok = Array.isArray(from) ? from : [from];
+    if (!ok.includes(sh.status)) throw conflict('invalid_shipment_state', `Shipment is ${sh.status}, expected ${ok.join(' or ')}.`);
     return sh;
+  }
+
+  /** The operator bought it on Walmart. From here the household can no longer cancel. */
+  markPlaced(orderId, { retailer_order_id } = {}) {
+    const sh = this.#operatorShipment(orderId, 'awaiting_fulfillment');
+    this.db.prepare("UPDATE shipments SET status = 'placed', retailer_order_id = ?, retailer_canceled_at = NULL WHERE id = ?").run(retailer_order_id || null, sh.id);
+    this.#emit(sh.account_id, 'shipment.placed', { shipment_id: sh.id, order_id: orderId });
+    return this.adminOrder(orderId);
+  }
+
+  /** Walmart canceled it: back to the queue, to buy elsewhere (Amazon) or refund. */
+  markRetailerCanceled(orderId) {
+    const sh = this.#operatorShipment(orderId, ['placed', 'awaiting_fulfillment']);
+    this.db.prepare("UPDATE shipments SET status = 'awaiting_fulfillment', retailer_canceled_at = ? WHERE id = ?").run(this.#account(sh.account_id).clock, sh.id);
+    this.#emit(sh.account_id, 'shipment.retailer_canceled', { shipment_id: sh.id, order_id: orderId, next: 'Domaru is buying it from another retailer at no extra cost.' });
+    return this.adminOrder(orderId);
+  }
+
+  /** Operator marks lost, damaged or wrong item; opens a case if none is open. */
+  markProblem(orderId, { problem, note } = {}) {
+    const kinds = { lost: 'never_arrived', damaged: 'damaged', wrong_item: 'wrong_item' };
+    if (!kinds[problem]) throw badRequest('invalid_param', "problem must be 'lost', 'damaged' or 'wrong_item'.", { param: 'problem' });
+    const sh = this.db.prepare('SELECT * FROM shipments WHERE order_id = ?').get(orderId);
+    if (!sh) throw notFound('shipment', orderId);
+    this.db.prepare('UPDATE shipments SET problem = ? WHERE id = ?').run(problem, sh.id);
+    const open = this.db.prepare("SELECT * FROM cases WHERE order_id = ? AND status = 'open'").get(orderId);
+    if (!open) this.reportProblem({ accountId: sh.account_id, role: 'operator' }, orderId, { kind: kinds[problem], note }, 'operator');
+    return this.adminOrder(orderId);
   }
 
   markShipped(orderId, { carrier, tracking_number } = {}) {
     if (!carrier || !tracking_number) throw badRequest('missing_param', 'carrier and tracking_number are required.', { hint: 'e.g. carrier "UPS", tracking_number "1Z..."' });
-    const sh = this.#operatorShipment(orderId, 'awaiting_fulfillment');
+    const sh = this.#operatorShipment(orderId, ['awaiting_fulfillment', 'placed']);
     const now = this.#account(sh.account_id).clock;
     this.db.prepare("UPDATE shipments SET status = 'shipped', carrier = ?, tracking_number = ?, shipped_at = ? WHERE id = ?").run(carrier, tracking_number, now, sh.id);
     this.#emit(sh.account_id, 'shipment.shipped', { shipment_id: sh.id, order_id: orderId, carrier, tracking_number });
+    const a = this.#account(sh.account_id);
+    this.#mail(a, 'shipped', a.email, 'Your Domaru order is on the way', [
+      `Order ${orderId} has shipped with ${carrier}. Tracking: ${tracking_number}.`,
+      'The box may come from Walmart or Amazon; we buy from them and ship straight to you.',
+      `Problem with it? Tell your assistant, or reply to this email.`,
+    ]);
     return this.#presentOrder(this.db.prepare('SELECT * FROM orders WHERE id = ?').get(orderId));
   }
 
@@ -950,6 +1627,54 @@ export class Store {
     this.#emit(sh.account_id, 'shipment.delivered', { shipment_id: sh.id, order_id: orderId });
     this.#afterDelivery(sh.account_id);
     return this.#presentOrder(this.db.prepare('SELECT * FROM orders WHERE id = ?').get(orderId));
+  }
+
+  // -------------------------------------------------------------- email
+
+  /** Queue an email. Delivery happens in flushEmails, outside the request. */
+  #mail(account, kind, to, subject, lines) {
+    if (!to) return;
+    const body = [...lines, '', '--', `Domaru · ${this.support.email} · Charges show on your statement as DOMARU.`].join('\n');
+    this.db.prepare("INSERT INTO emails (id, account_id, kind, to_addr, subject, body, status, created_at) VALUES (?, ?, ?, ?, ?, ?, 'queued', ?)")
+      .run(id('em'), account?.id ?? null, kind, to, subject, body, account?.clock ?? new Date().toISOString());
+  }
+
+  #mailSupport(kind, subject, lines) {
+    this.#mail(null, kind, this.support.email, subject, lines);
+  }
+
+  /** Deliver queued email. Safe to call often; overlapping calls share one run. */
+  flushEmails() {
+    this.#flushing ??= (async () => {
+      try {
+        for (const e of this.db.prepare("SELECT * FROM emails WHERE status = 'queued' ORDER BY rowid").all()) {
+          let r;
+          try {
+            r = await this.mailer.send({ id: e.id, from: this.support.from, replyTo: this.support.email, to: e.to_addr, subject: e.subject, text: e.body });
+          } catch (err) {
+            r = { status: 'failed', error: err.message };
+          }
+          this.db.prepare('UPDATE emails SET status = ?, provider_ref = ?, error = ?, sent_at = ? WHERE id = ?').run(r.status, r.ref ?? null, r.error ?? null, new Date().toISOString(), e.id);
+        }
+      } finally {
+        this.#flushing = null;
+      }
+    })();
+    return this.#flushing;
+  }
+
+  #flushing = null;
+
+  /** Operator view of sent and queued mail, newest first. */
+  listEmails({ account_id, to, kind, limit = 50 } = {}) {
+    let sql = 'SELECT * FROM emails WHERE 1 = 1';
+    const args = [];
+    if (account_id) { sql += ' AND account_id = ?'; args.push(account_id); }
+    if (to) { sql += ' AND to_addr = ?'; args.push(to); }
+    if (kind) { sql += ' AND kind = ?'; args.push(kind); }
+    sql += ' ORDER BY rowid DESC LIMIT ?';
+    args.push(limit);
+    return this.db.prepare(sql).all(...args).map((e) => ({ id: e.id, account_id: e.account_id, kind: e.kind, to: e.to_addr, subject: e.subject, body: e.body, status: e.status, created_at: e.created_at }));
   }
 
   // -------------------------------------------------------------- events

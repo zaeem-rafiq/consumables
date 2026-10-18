@@ -9,10 +9,10 @@ const AGENT_PROFILE = { 'ucp-agent': 'profile="https://platform.example/.well-kn
 
 async function withServer(fn, { token = 'pm_card_visa', address = true } = {}) {
   const store = new Store();
-  const created = store.createAccount({ name: 'UCP home', start_date: '2026-01-05' });
+  const created = store.createAccount({ name: 'UCP home', email: 'u@example.com', start_date: '2026-01-05' });
   const agent = store.authenticate(created.api_key);
   if (token) await store.addPaymentMethod(agent, { token });
-  if (address) store.addAddress(agent, ADDRESS);
+  if (address) store.addAddress({ ...agent, role: 'owner' }, ADDRESS);
   const server = await startServer(store, { port: 0, host: '127.0.0.1' });
   const base = `http://127.0.0.1:${server.address().port}`;
   const call = async (method, path, body, headers = {}) => {
@@ -24,7 +24,7 @@ async function withServer(fn, { token = 'pm_card_visa', address = true } = {}) {
     return { status: res.status, body: await res.json() };
   };
   try {
-    await fn({ store, created, agent, owner: store.authenticate(created.owner_key), call, base });
+    await fn({ store, created, agent, owner: { accountId: agent.accountId, role: 'owner' }, call, base });
   } finally {
     server.close();
   }

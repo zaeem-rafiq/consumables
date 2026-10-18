@@ -10,6 +10,7 @@
 // 'pending' and only clears, or bounces, a few business days later. The store
 // polls checkCharge until it settles.
 
+import { createHmac, timingSafeEqual } from 'node:crypto';
 import { ApiError, badRequest } from './errors.js';
 
 const MOCK_CARDS = {
@@ -63,6 +64,10 @@ export class MockPayments {
     if (MOCK_BANKS[pmRef]) return { status: 'pending', failure_code: null, ref: `mock_ach_${orderId}_${attempt}` };
     const card = MOCK_CARDS[pmRef];
     return card?.fail ? { status: 'failed', failure_code: card.fail, ref: null } : { status: 'succeeded', failure_code: null, ref: null };
+  }
+
+  async refund({ orderId, n }) {
+    return { status: 'succeeded', ref: `mock_re_${orderId}_${n}` };
   }
 
   /** Mock bank debits settle after the clearing window, on the account's clock. */
@@ -173,7 +178,7 @@ export class StripePayments {
         description: `Domaru order ${orderId}`,
         metadata: { order_id: orderId },
       }, `charge-${orderId}-${attempt}`);
-      return chargeResult(pi, bank);
+      return chargeResult(pi);
     } catch (err) {
       if (err.stripe?.type === 'card_error') {
         return { status: 'failed', failure_code: err.stripe.decline_code ?? err.stripe.code ?? 'card_declined', ref: err.stripe.payment_intent?.id ?? null };
@@ -182,11 +187,21 @@ export class StripePayments {
     }
   }
 
-  /** Where a pending bank debit stands now. */
+  /** Send money back to the card or bank account the order was paid with. */
+  async refund({ ref, amountCents, orderId, n, reason }) {
+    try {
+      const r = await this.#request('POST', '/v1/refunds', { payment_intent: ref, amount: amountCents, metadata: { order_id: orderId, reason } }, `refund-${orderId}-${n}`);
+      return { status: r.status === 'failed' || r.status === 'canceled' ? 'failed' : 'succeeded', ref: r.id };
+    } catch (err) {
+      throw upstream(err);
+    }
+  }
+
+  /** Where a pending debit stands now. */
   async checkCharge({ ref }) {
     try {
       const pi = await this.#request('GET', `/v1/payment_intents/${encodeURIComponent(ref)}`);
-      return chargeResult(pi, true);
+      return chargeResult(pi);
     } catch (err) {
       throw upstream(err);
     }
@@ -200,15 +215,46 @@ function present(pm) {
   return { ref: pm.id, type: 'card', brand: pm.card?.brand ?? 'card', last4: pm.card?.last4 ?? '????' };
 }
 
-function chargeResult(pi, bank) {
+function chargeResult(pi) {
   if (pi.status === 'succeeded') return { status: 'succeeded', failure_code: null, ref: pi.id };
-  if (pi.status === 'processing') return { status: bank ? 'pending' : 'succeeded', failure_code: null, ref: pi.id };
+  // Bank debits (and the occasional card) sit in 'processing' until the money moves.
+  if (pi.status === 'processing') return { status: 'pending', failure_code: null, ref: pi.id };
   const failure = pi.last_payment_error?.decline_code ?? pi.last_payment_error?.code;
   return { status: 'failed', failure_code: pi.status === 'requires_action' ? 'authentication_required' : failure ?? pi.status, ref: pi.id };
 }
 
 function upstream(err) {
-  return new ApiError(502, 'payment_provider_error', `The payment provider failed: ${err.message}`, { hint: 'Retry with the same idempotency key in a moment.' });
+  // Stripe's own wording stays in our logs, not in what agents see.
+  console.error('stripe error', err.stripe ?? err.message);
+  return new ApiError(502, 'payment_provider_error', 'The payment provider could not be reached or refused the request.', { hint: 'Retry with the same idempotency key in a moment.' });
+}
+
+/**
+ * Check a Stripe webhook's Stripe-Signature header (t=...,v1=...) against the
+ * endpoint secret. Returns the parsed event, or null if it doesn't verify.
+ */
+export function verifyStripeEvent(rawBody, header, secret, { now = Date.now(), toleranceSec = 300 } = {}) {
+  if (!header || !secret) return null;
+  const parts = Object.fromEntries(header.split(',').map((kv) => kv.split('=')).filter((x) => x.length === 2).map(([k, v]) => [k.trim(), v.trim()]));
+  const sigs = header.split(',').filter((kv) => kv.trim().startsWith('v1=')).map((kv) => kv.trim().slice(3));
+  const t = Number(parts.t);
+  if (!t || !sigs.length || Math.abs(now / 1000 - t) > toleranceSec) return null;
+  const expected = createHmac('sha256', secret).update(`${t}.${rawBody}`).digest();
+  const ok = sigs.some((sig) => {
+    const got = Buffer.from(sig, 'hex');
+    return got.length === expected.length && timingSafeEqual(got, expected);
+  });
+  if (!ok) return null;
+  try {
+    return JSON.parse(rawBody);
+  } catch {
+    return null;
+  }
+}
+
+/** Sign a payload the way Stripe does; used by tests. */
+export function signStripeEvent(rawBody, secret, t = Math.floor(Date.now() / 1000)) {
+  return `t=${t},v1=${createHmac('sha256', secret).update(`${t}.${rawBody}`).digest('hex')}`;
 }
 
 /** Stripe-style form encoding with nested objects and arrays. */

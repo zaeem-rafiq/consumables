@@ -78,7 +78,7 @@ async function stripeStore(opts = {}) {
   const store = new Store({ payments, ...opts });
   const { api_key } = store.createAccount({ name: 'Stripe home', email: 'home@example.com' });
   const agent = store.authenticate(api_key);
-  store.addAddress(agent, ADDRESS);
+  store.addAddress({ ...agent, role: 'owner' }, ADDRESS);
   return { store, agent, stripe };
 }
 
@@ -143,14 +143,14 @@ test('card setup link: human saves a card on Stripe, it becomes the default', as
 
 test('mock payments refuse setup links with a hint', async () => {
   const store = new Store();
-  const { api_key } = store.createAccount({ name: 'Mock' });
+  const { api_key } = store.createAccount({ name: 'Mock', email: 'm@example.com' });
   await assert.rejects(() => store.createCardSetupLink(store.authenticate(api_key)), (e) => e.code === 'setup_links_unavailable' && /pm_card_visa/.test(e.hint));
 });
 
 test('live keys refuse test tokens', async () => {
   const stripe = fakeStripe();
   const store = new Store({ payments: new StripePayments({ secretKey: 'sk_live_fake', publicUrl: 'https://shop.test', fetch: stripe.fetch }), mode: 'live', fulfillment: 'manual' });
-  const created = store.createAccount({ name: 'Live' });
+  const created = store.createAccount({ name: 'Live', email: 'l@example.com' });
   assert.ok(created.api_key.startsWith('ck_live_'));
   await assert.rejects(() => store.addPaymentMethod(store.authenticate(created.api_key), { token: 'pm_card_visa' }), (e) => e.code === 'use_setup_link');
 });

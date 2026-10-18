@@ -31,14 +31,15 @@ test('tools are discoverable with annotations', async () => {
 });
 
 test('agent goes from zero to subscription over MCP (stdio-style session)', async () => {
-  const client = await connect(new Store());
+  const store = new Store();
+  const client = await connect(store);
   const call = async (name, args = {}) => client.callTool({ name, arguments: args });
 
   const noAuth = await call('get_account');
   assert.equal(noAuth.isError, true);
-  assert.match(parse(noAuth).error.hint, /POST \/v1\/accounts/);
+  assert.match(parse(noAuth).error.hint, /Connect Domaru/);
 
-  const acct = parse(await call('create_account', { name: 'MCP home', household_size: 4, payment_token: 'pm_card_visa', address: ADDRESS }));
+  const acct = parse(await call('create_account', { name: 'MCP home', email: 'mcp@example.com', household_size: 4, payment_token: 'pm_card_visa', address: ADDRESS }));
   assert.ok(acct.api_key.startsWith('ck_test_'));
   assert.ok(acct.account.default_payment_method_id);
 
@@ -52,6 +53,10 @@ test('agent goes from zero to subscription over MCP (stdio-style session)', asyn
   const sub = parse(await call('create_subscription', { items, cadence_days: 28, idempotency_key: 'abc' }));
   const again = parse(await call('create_subscription', { items, cadence_days: 28, idempotency_key: 'abc' }));
   assert.equal(again.id, sub.id);
+  // The address the agent added is new to the owner, so the first order waits for them.
+  assert.equal(sub.latest_order.status, 'requires_approval');
+  assert.equal(sub.latest_order.approval.reasons[0].code, 'new_address');
+  await store.decideApproval({ accountId: acct.account.id, role: 'owner' }, sub.latest_order.approval.id, 'approve');
 
   assert.equal(parse(await call('skip_next_delivery', { subscription_id: sub.id })).next_order_date > sub.next_order_date, true);
   assert.equal(parse(await call('pause_subscription', { subscription_id: sub.id })).status, 'paused');
@@ -70,7 +75,7 @@ test('remote MCP over Streamable HTTP with bearer key', async () => {
   const store = new Store();
   const server = await startServer(store, { port: 0, host: '127.0.0.1' });
   try {
-    const { api_key } = store.createAccount({ name: 'Remote' });
+    const { api_key } = store.createAccount({ name: 'Remote', email: 'r@example.com' });
     const client = new Client({ name: 'remote-agent', version: '0.0.0' });
     await client.connect(new StreamableHTTPClientTransport(new URL(`http://127.0.0.1:${server.address().port}/mcp`), {
       requestInit: { headers: { authorization: `Bearer ${api_key}` } },

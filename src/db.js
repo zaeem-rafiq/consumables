@@ -109,6 +109,80 @@ CREATE TABLE IF NOT EXISTS idempotency (
   created_at TEXT NOT NULL,
   PRIMARY KEY (account_id, key)
 );
+CREATE TABLE IF NOT EXISTS cases (
+  id TEXT PRIMARY KEY,
+  account_id TEXT NOT NULL,
+  order_id TEXT NOT NULL,
+  kind TEXT NOT NULL,
+  note TEXT,
+  photo_url TEXT,
+  skus_json TEXT NOT NULL,
+  preferred TEXT,
+  value_cents INTEGER NOT NULL,
+  needs_proof INTEGER NOT NULL,
+  proof_reason TEXT,
+  status TEXT NOT NULL,
+  resolution TEXT,
+  resend_order_id TEXT,
+  refund_cents INTEGER,
+  reported_by TEXT NOT NULL,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS logins (
+  token_hash TEXT PRIMARY KEY,
+  email TEXT NOT NULL,
+  next TEXT,
+  expires_at TEXT NOT NULL,
+  used_at TEXT
+);
+CREATE TABLE IF NOT EXISTS sessions (
+  token_hash TEXT PRIMARY KEY,
+  account_id TEXT NOT NULL,
+  kind TEXT NOT NULL,
+  created_at TEXT NOT NULL,
+  expires_at TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS oauth_clients (
+  id TEXT PRIMARY KEY,
+  name TEXT NOT NULL,
+  redirect_uris_json TEXT NOT NULL,
+  created_at TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS oauth_codes (
+  code_hash TEXT PRIMARY KEY,
+  client_id TEXT NOT NULL,
+  account_id TEXT NOT NULL,
+  redirect_uri TEXT NOT NULL,
+  code_challenge TEXT NOT NULL,
+  expires_at TEXT NOT NULL,
+  used_at TEXT
+);
+CREATE TABLE IF NOT EXISTS grants (
+  id TEXT PRIMARY KEY,
+  account_id TEXT NOT NULL,
+  client_id TEXT NOT NULL,
+  client_name TEXT NOT NULL,
+  access_hash TEXT NOT NULL UNIQUE,
+  access_expires_at TEXT NOT NULL,
+  refresh_hash TEXT NOT NULL UNIQUE,
+  created_at TEXT NOT NULL,
+  last_used_at TEXT,
+  revoked_at TEXT
+);
+CREATE TABLE IF NOT EXISTS emails (
+  id TEXT PRIMARY KEY,
+  account_id TEXT,
+  kind TEXT NOT NULL,
+  to_addr TEXT NOT NULL,
+  subject TEXT NOT NULL,
+  body TEXT NOT NULL,
+  status TEXT NOT NULL,
+  error TEXT,
+  provider_ref TEXT,
+  created_at TEXT NOT NULL,
+  sent_at TEXT
+);
 CREATE INDEX IF NOT EXISTS idx_subs_account ON subscriptions(account_id);
 CREATE INDEX IF NOT EXISTS idx_orders_account ON orders(account_id);
 CREATE INDEX IF NOT EXISTS idx_events_account ON events(account_id, seq);
@@ -119,12 +193,27 @@ export function openDb(path = ':memory:') {
   db.exec('PRAGMA journal_mode = WAL;');
   db.exec(SCHEMA);
   // Columns added after the first release.
-  const cols = db.prepare('PRAGMA table_info(accounts)').all().map((c) => c.name);
-  if (!cols.includes('provider_customer_id')) db.exec('ALTER TABLE accounts ADD COLUMN provider_customer_id TEXT');
-  const pmCols = db.prepare('PRAGMA table_info(payment_methods)').all().map((c) => c.name);
-  if (!pmCols.includes('type')) db.exec("ALTER TABLE payment_methods ADD COLUMN type TEXT NOT NULL DEFAULT 'card'");
-  if (!pmCols.includes('mandate')) db.exec('ALTER TABLE payment_methods ADD COLUMN mandate TEXT');
-  const orderCols = db.prepare('PRAGMA table_info(orders)').all().map((c) => c.name);
-  if (!orderCols.includes('fulfill_on')) db.exec('ALTER TABLE orders ADD COLUMN fulfill_on TEXT');
+  const addCol = (table, col, ddl) => {
+    const cols = db.prepare(`PRAGMA table_info(${table})`).all().map((c) => c.name);
+    if (!cols.includes(col)) db.exec(`ALTER TABLE ${table} ADD COLUMN ${col} ${ddl}`);
+  };
+  addCol('accounts', 'provider_customer_id', 'TEXT');
+  addCol('accounts', 'owner_claim_hash', 'TEXT');
+  addCol('accounts', 'owner_claimed_at', 'TEXT');
+  addCol('accounts', 'hold_reason', 'TEXT');
+  addCol('accounts', 'terms_version', 'TEXT');
+  addCol('accounts', 'terms_accepted_at', 'TEXT');
+  addCol('payment_methods', 'type', "TEXT NOT NULL DEFAULT 'card'");
+  addCol('payment_methods', 'mandate', 'TEXT');
+  // Addresses saved before owner confirmation existed are treated as confirmed.
+  addCol('addresses', 'confirmed', 'INTEGER NOT NULL DEFAULT 1');
+  addCol('approvals', 'token_hash', 'TEXT');
+  addCol('orders', 'fulfill_on', 'TEXT');
+  addCol('orders', 'refunds_json', "TEXT NOT NULL DEFAULT '[]'");
+  addCol('orders', 'resend_of', 'TEXT');
+  addCol('orders', 'dispute_json', 'TEXT');
+  addCol('shipments', 'retailer_order_id', 'TEXT');
+  addCol('shipments', 'retailer_canceled_at', 'TEXT');
+  addCol('shipments', 'problem', 'TEXT');
   return db;
 }

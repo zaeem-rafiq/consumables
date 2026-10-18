@@ -15,7 +15,8 @@ const INSTRUCTIONS = `Domaru sells everyday household supplies (toilet paper, pa
 Typical flow: recommend_bundle -> quote -> create_subscription. Then manage with update_subscription, pause_subscription, skip_next_delivery, ship_now, report_supply_level and cancel_subscription.
 Prices are integer cents (USD). Subscriptions get 5% off; orders of $35+ after discount ship free.
 Spend policy is set by the human owner. Orders over policy are held with status "requires_approval"; tell the human, do not retry. Agents cannot approve orders or raise limits.
-No account yet? Call create_account: it returns an api_key and attaches it to this session (stdio). To pay, call create_card_setup_link and send the URL to the human so they can save a card (in test mode you can pass payment_token pm_card_visa instead).
+Households connect Domaru from their assistant (Connect / sign in), which sets up the address, card and limits; you then shop within those limits. Developers without an account can call create_account (it emails the owner and returns an api_key attached to this session over stdio).
+Problems with a delivery (never arrived, damaged, wrong or missing item): call report_problem; Domaru's team resolves it and you can read back the case. You cannot issue refunds. Before an order is bought from the retailer, cancel_order cancels it with a full refund.
 Cards are the default. After the first delivery arrives, get_account shows bank_payments.offer: tell the human they can switch to bank payments and save 2% on every delivery, and send them the link from create_bank_setup_link.
 Sandbox only: advance_test_clock moves time forward to simulate renewals and deliveries.`;
 
@@ -79,10 +80,10 @@ export function buildMcpServer(store, session, { attachKeyOnSignup = true } = {}
   // ---- account
   tool('create_account', {
     title: 'Create account',
-    description: 'Create an account. Returns an agent api_key and an owner_key for the human. Optionally attaches a test card (test mode only) and a shipping address so you can subscribe right away.',
+    description: "Developers: create an account with an agent api_key. Households should use Connect Domaru in their assistant instead. Domaru emails the owner a sign-in link; the owner approves held orders and sets limits, and limits start at the defaults. Optionally attaches a test card (test mode only) and a shipping address; the first order to an address you add waits for the owner's approval.",
     input: {
       name: z.string().describe('Household name'),
-      email: z.string().optional(),
+      email: z.string().describe("The account owner's email. They get the sign-in link and approval requests."),
       household_size: z.number().int().min(1).max(20).default(2),
       payment_token: z.string().optional().describe('Test mode card token, e.g. pm_card_visa'),
       address: z.object({
@@ -211,14 +212,47 @@ export function buildMcpServer(store, session, { attachKeyOnSignup = true } = {}
 
   tool('list_orders', {
     title: 'List orders', description: 'Orders, newest first, with payment and shipment status.', readOnly: true,
-    input: { subscription_id: z.string().optional(), status: z.enum(['paid', 'payment_pending', 'requires_approval', 'payment_failed', 'canceled']).optional(), limit: z.number().int().min(1).max(200).default(20) },
+    input: { subscription_id: z.string().optional(), status: z.enum(['paid', 'payment_pending', 'requires_approval', 'payment_failed', 'canceled', 'refunded']).optional(), limit: z.number().int().min(1).max(200).default(20) },
   }, (args) => store.listOrders(auth(), args));
 
   tool('get_order', { title: 'Get order', description: 'One order with charges, approval and shipment tracking.', readOnly: true, input: { order_id: z.string() } },
     ({ order_id }) => store.getOrder(auth(), order_id));
 
+  tool('cancel_order', {
+    title: 'Cancel order',
+    description: 'Cancel an order before Domaru has bought it from the retailer. A paid order is refunded in full to the card or bank it was paid with. Once bought it cannot be canceled; use report_problem instead.',
+    destructive: true,
+    input: { order_id: z.string(), reason: z.string().optional() },
+  }, ({ order_id, reason }) => store.cancelOrder(auth(), order_id, { reason }));
+
+  tool('report_problem', {
+    title: 'Report a problem with an order',
+    description: "Tell Domaru something went wrong with a delivery: never_arrived (tracking says delivered but it isn't there), damaged, wrong_item, missing_item, charged_wrong or other. Opens a case Domaru's team resolves with a refund or a free resend; read it back with get_case. Pass skus for the affected items only, a photo_url (https) for damage, and preferred: refund or resend if the household said. You cannot issue refunds yourself.",
+    input: {
+      order_id: z.string(),
+      kind: z.enum(['never_arrived', 'damaged', 'wrong_item', 'missing_item', 'charged_wrong', 'other']),
+      note: z.string().max(2000).optional().describe("What the household said, in a sentence or two"),
+      photo_url: z.string().url().optional(),
+      skus: z.array(z.string()).optional().describe('Only the affected items; omit for the whole order'),
+      preferred: z.enum(['refund', 'resend']).optional(),
+    },
+  }, ({ order_id, ...rest }) => store.reportProblem(auth(), order_id, rest));
+
+  tool('list_cases', {
+    title: 'List problem reports', description: 'Problems reported on this account and what happens next for each.', readOnly: true,
+    input: { status: z.enum(['open', 'resend_sent', 'refunded', 'closed']).optional() },
+  }, (args) => store.listCases(auth(), args));
+
+  tool('get_case', { title: 'Get problem report', description: 'One problem report: status, resolution and what happens next.', readOnly: true, input: { case_id: z.string() } },
+    ({ case_id }) => store.getCase(auth(), case_id));
+
+  tool('resend_owner_invite', {
+    title: "Re-send the owner's sign-in link",
+    description: "Email the account owner a fresh sign-in link (to the owner email on file), e.g. if they lost the first one. They use it to approve orders and set limits.",
+  }, () => store.resendOwnerInvite(auth()));
+
   tool('list_approvals', {
-    title: 'List approvals', description: 'Orders held for the human owner because they exceed spend policy.', readOnly: true,
+    title: 'List approvals', description: 'Orders held for the human owner (over a limit, or the first order to a new address). The owner was emailed an Approve / Decline link.', readOnly: true,
     input: { status: z.enum(['pending', 'approved', 'rejected', 'all']).default('pending') },
   }, (args) => store.listApprovals(auth(), args));
 

@@ -7,8 +7,9 @@ import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/
 import { ApiError, badRequest } from './errors.js';
 import { buildMcpServer } from './mcp.js';
 import { PRICING } from './store.js';
-import { fulfillmentPage, messagePage, termsPage, privacyPage } from './admin.js';
+import { messagePage } from './ui.js';
 import { landingPage } from './landing.js';
+import { handleWeb, RateLimit, clientIp } from './web.js';
 import { Ucp, ucpProfile } from './ucp.js';
 
 const MAX_BODY = 1_000_000;
@@ -21,9 +22,10 @@ function routes(store) {
     ['GET', '/v1/products/:sku', 'Get one product', 'none', ({ params }) => store.getProduct(params.sku)],
     ['POST', '/v1/recommendations', 'Recommend a bundle for a household { household_size, skus?, cadence_days? }', 'optional', ({ auth, body }) => store.recommend(auth, body)],
 
-    ['POST', '/v1/accounts', 'Create a sandbox account { name, household_size?, email?, policy? } -> api_key + owner_key', 'none', ({ body }) => store.createAccount(body)],
+    ['POST', '/v1/accounts', "Developers: create an account { name, email (the owner's), household_size? } -> api_key. The owner is emailed a sign-in link. Households use Connect Domaru (OAuth) instead", 'none', ({ body }) => store.createAccount(body)],
+    ['POST', '/v1/account/owner_invite', "Re-send the owner's sign-in link to the owner email on file", 'agent', ({ auth }) => store.resendOwnerInvite(auth)],
     ['GET', '/v1/account', 'Get the current account, policy and month-to-date spend', 'agent', ({ auth }) => store.getAccount(auth.accountId)],
-    ['PATCH', '/v1/account', 'Update { household_size?, name?, email? }', 'agent', ({ auth, body }) => store.updateAccount(auth, body)],
+    ['PATCH', '/v1/account', 'Update { household_size?, name? } (email: owner only)', 'agent', ({ auth, body }) => store.updateAccount(auth, body)],
     ['PATCH', '/v1/account/policy', 'Owner only: update spend policy', 'owner', ({ auth, body }) => store.updatePolicy(auth, body)],
 
     ['POST', '/v1/payment_methods', 'Test mode: add a card or bank account from a token { token } (pm_card_visa, pm_card_declined, pm_usBankAccount_success, ...)', 'agent', ({ auth, body }) => store.addPaymentMethod(auth, body)],
@@ -31,7 +33,8 @@ function routes(store) {
     ['POST', '/v1/payment_methods/bank_setup_link', 'After the first delivery: get a page where the human signs in to their bank to pay by bank and save 2% on every delivery', 'agent', ({ auth }) => store.createBankSetupLink(auth)],
     ['GET', '/v1/payment_methods', 'List cards and bank accounts', 'agent', ({ auth }) => ({ data: store.listPaymentMethods(auth) })],
     ['POST', '/v1/addresses', 'Add a US shipping address', 'agent', ({ auth, body }) => store.addAddress(auth, body)],
-    ['GET', '/v1/addresses', 'List addresses', 'agent', ({ auth }) => ({ data: store.listAddresses(auth) })],
+    ['GET', '/v1/addresses', 'List addresses (confirmed: false means the first order there waits for the owner)', 'agent', ({ auth }) => ({ data: store.listAddresses(auth) })],
+    ['POST', '/v1/addresses/:id/confirm', 'Owner only: confirm an address', 'owner', ({ auth, params }) => store.confirmAddress(auth, params.id)],
 
     ['POST', '/v1/quotes', 'Price a basket and check spend policy { items, subscription?, cadence_days? }', 'agent', ({ auth, body }) => store.quote(auth, body)],
 
@@ -48,7 +51,11 @@ function routes(store) {
 
     ['POST', '/v1/orders', 'Place a one-time order { items, address_id?, payment_method_id? }', 'agent', ({ auth, body }) => store.createOrder(auth, body)],
     ['GET', '/v1/orders', 'List orders (?subscription_id=, ?status=, ?limit=)', 'agent', ({ auth, query }) => ({ data: store.listOrders(auth, query) })],
-    ['GET', '/v1/orders/:id', 'Get an order with charges and shipment', 'agent', ({ auth, params }) => store.getOrder(auth, params.id)],
+    ['GET', '/v1/orders/:id', 'Get an order with charges, refunds and shipment', 'agent', ({ auth, params }) => store.getOrder(auth, params.id)],
+    ['POST', '/v1/orders/:id/cancel', 'Cancel an order before it is bought from the retailer; paid orders are refunded in full { reason? }', 'agent', ({ auth, params, body }) => store.cancelOrder(auth, params.id, body)],
+    ['POST', '/v1/orders/:id/problems', "Report a problem { kind: never_arrived|damaged|wrong_item|missing_item|charged_wrong|other, note?, photo_url?, skus?, preferred?: refund|resend }", 'agent', ({ auth, params, body }) => store.reportProblem(auth, params.id, body)],
+    ['GET', '/v1/cases', 'Problem reports and what happens next (?status=open|resend_sent|refunded|closed)', 'agent', ({ auth, query }) => ({ data: store.listCases(auth, query) })],
+    ['GET', '/v1/cases/:id', 'One problem report', 'agent', ({ auth, params }) => store.getCase(auth, params.id)],
 
     ['GET', '/v1/approvals', 'List approvals (?status=pending|approved|rejected|all)', 'agent', ({ auth, query }) => ({ data: store.listApprovals(auth, query) })],
     ['POST', '/v1/approvals/:id/approve', 'Owner only: approve a held order', 'owner', ({ auth, params }) => store.decideApproval(auth, params.id, 'approve')],
@@ -85,6 +92,8 @@ function openapi(table, baseUrl) {
   };
 }
 
+const SUPPORT = 'support@domaru.app';
+
 function llmsTxt(table, baseUrl) {
   return `# Domaru
 
@@ -96,15 +105,17 @@ function llmsTxt(table, baseUrl) {
 - Subscriptions get ${PRICING.subscription_discount_pct}% off. Free shipping at $${PRICING.free_shipping_threshold_cents / 100}+ after discount, else $${PRICING.shipping_cents / 100}. Tax ${PRICING.tax_rate_pct}% (mock).
 
 ## Quickstart
-1. POST /v1/accounts {"name":"My household","household_size":3} -> api_key (for you) and owner_key (give it to the human).
-2. POST /v1/payment_methods/setup_link and send the url to the human to save a card (test mode: POST /v1/payment_methods {"token":"pm_card_visa"}). Then POST /v1/addresses {...}
+1. Households: connect Domaru from your assistant (MCP at ${baseUrl}/mcp uses OAuth: the person signs in by emailed link, adds an address and card, and taps Allow). Developers: POST /v1/accounts {"name":"My household","email":"owner@example.com"} -> api_key; the owner is emailed a sign-in link.
+2. Developers only: POST /v1/payment_methods/setup_link and send the url to the human to save a card (test mode: POST /v1/payment_methods {"token":"pm_card_visa"}). Then POST /v1/addresses {...}; the first order to an address you add waits for the owner.
 3. POST /v1/recommendations {} -> a bundle sized to the household
 4. POST /v1/subscriptions {"items":[...],"cadence_days":28}
 5. Manage: PATCH, /pause, /resume, /skip, /ship_now, /supply_signal, /cancel
 
 ## Rules
 - Send an Idempotency-Key header on POST/PATCH so retries never double-order.
-- Orders over the owner's spend policy come back with status "requires_approval". Tell the human; do not retry. Only the owner_key can approve or change policy.
+- Orders over the owner's spend policy come back with status "requires_approval". Domaru emails the owner an Approve / Decline link. Tell the human; do not retry. You can never approve or change limits.
+- Something wrong with a delivery? POST /v1/orders/{id}/problems, then read back GET /v1/cases. Changed your mind before it was bought? POST /v1/orders/{id}/cancel (full refund). You cannot issue refunds.
+- Support: ${SUPPORT}. Charges show on statements as DOMARU.
 - Cards are the default. After the first delivery arrives, GET /v1/account shows bank_payments.offer: tell the human they can switch to bank payments and save ${PRICING.bank_discount_pct}% on every delivery, and send them the url from POST /v1/payment_methods/bank_setup_link. Bank payers are charged a few business days before each delivery (order status "payment_pending" until it clears). A bounced bank payment is handled like a declined card.
 - Errors are { "error": { "code", "message", "hint" } }. Follow the hint.
 - Sandbox: POST /v1/test/clock/advance {"days":30} simulates renewals and deliveries.
@@ -148,38 +159,33 @@ function bearer(req) {
   return h.toLowerCase().startsWith('bearer ') ? h.slice(7).trim() : null;
 }
 
-/**
- * Operator pages for concierge fulfillment. Auth is a shared ADMIN_KEY passed
- * as ?key= so the page works from a bookmark on a phone.
- */
-async function handleAdmin(store, req, res, url, adminKey) {
-  if (!adminKey) throw new ApiError(404, 'route_not_found', 'Admin pages are disabled.', { hint: 'Set ADMIN_KEY to enable them.' });
-  if (url.searchParams.get('key') !== adminKey) return send(res, 401, messagePage('Not allowed', 'This link is missing the admin key.'), 'text/html');
-  const back = () => { res.writeHead(303, { location: `/admin?key=${encodeURIComponent(adminKey)}` }); res.end(); };
-  if (req.method === 'GET' && url.pathname === '/admin') {
-    return send(res, 200, fulfillmentPage({
-      awaiting: store.listFulfillmentQueue({ status: 'awaiting_fulfillment' }),
-      shipped: store.listFulfillmentQueue({ status: 'shipped' }),
-      key: adminKey,
-    }), 'text/html');
-  }
-  if (req.method === 'GET' && url.pathname === '/admin/orders.json') return send(res, 200, { data: store.listFulfillmentQueue({ status: url.searchParams.get('status') ?? 'awaiting_fulfillment' }) });
-  const m = /^\/admin\/orders\/([^/]+)\/(ship|deliver)$/.exec(url.pathname);
-  if (req.method === 'POST' && m) {
-    const body = (await readBody(req, { form: true })) ?? {};
-    const order = m[2] === 'ship' ? store.markShipped(m[1], body) : store.markDelivered(m[1]);
-    return (req.headers['content-type'] ?? '').includes('json') ? send(res, 200, order) : back();
-  }
-  throw new ApiError(404, 'route_not_found', `No route ${req.method} ${url.pathname}.`);
-}
-
-export function createApp(store, { baseUrl, adminKey } = {}) {
+export function createApp(store, { baseUrl, adminKey, stripeWebhookSecret } = {}) {
   const table = routes(store);
+  const limits = {
+    signin: new RateLimit(5, 15 * 60_000),
+    adminLogin: new RateLimit(10, 15 * 60_000),
+    accounts: new RateLimit(20, 3600_000),
+    setup: new RateLimit(20, 3600_000),
+    register: new RateLimit(30, 3600_000),
+  };
 
-  const handleMcp = async (req, res, url) => {
+  const handleMcp = async (req, res, base) => {
     if (req.method !== 'POST') return send(res, 405, { jsonrpc: '2.0', error: { code: -32000, message: 'Use POST (stateless Streamable HTTP).' }, id: null });
+    // Credentials only in the Authorization header. No credentials: 401 with a
+    // pointer to our OAuth metadata, which is what starts "Connect Domaru".
+    const key = bearer(req);
+    let valid = false;
+    try { valid = !!(key && store.authenticate(key)); } catch { valid = false; }
+    if (!valid) {
+      res.writeHead(401, {
+        'content-type': 'application/json',
+        'www-authenticate': `Bearer resource_metadata="${base}/.well-known/oauth-protected-resource"${key ? ', error="invalid_token"' : ''}`,
+        'access-control-allow-origin': '*', 'access-control-expose-headers': 'www-authenticate',
+      });
+      return res.end(JSON.stringify({ error: 'unauthorized', error_description: 'Connect Domaru to continue.' }));
+    }
     const body = await readBody(req);
-    const server = buildMcpServer(store, { apiKey: bearer(req) ?? url.searchParams.get('api_key') ?? undefined }, { attachKeyOnSignup: false });
+    const server = buildMcpServer(store, { apiKey: key }, { attachKeyOnSignup: false });
     const transport = new StreamableHTTPServerTransport({ sessionIdGenerator: undefined, enableJsonResponse: true });
     res.on('close', () => { transport.close(); server.close(); });
     await server.connect(transport);
@@ -187,6 +193,7 @@ export function createApp(store, { baseUrl, adminKey } = {}) {
   };
 
   return async (req, res) => {
+    res.on('finish', () => { store.flushEmails().catch((err) => console.error('email delivery failed', err)); });
     const base = baseUrl ?? `http://${req.headers.host ?? 'localhost'}`;
     const url = new URL(req.url, base);
     try {
@@ -198,36 +205,19 @@ export function createApp(store, { baseUrl, adminKey } = {}) {
         });
         return res.end();
       }
-      if (url.pathname === '/mcp') return await handleMcp(req, res, url);
+      if (url.pathname === '/mcp') return await handleMcp(req, res, base);
+      if (await handleWeb(store, req, res, url, { base, adminKey, stripeWebhookSecret, send, limits })) return;
       if (req.method === 'GET' && url.pathname === '/') {
         if ((req.headers.accept ?? '').includes('text/markdown')) return send(res, 200, llmsTxt(table, base), 'text/markdown');
         if ((req.headers.accept ?? '').includes('text/html')) return send(res, 200, landingPage({ base }), 'text/html');
         return send(res, 200, {
           name: 'Domaru', description: 'Household consumables on subscription, built for AI agents.',
-          mcp: `${base}/mcp`, openapi: `${base}/openapi.json`, llms_txt: `${base}/llms.txt`, quickstart: 'POST /v1/accounts {"name":"..."}',
+          mcp: `${base}/mcp`, openapi: `${base}/openapi.json`, llms_txt: `${base}/llms.txt`, connect: 'Add the MCP endpoint to your assistant and sign in (OAuth)', support: 'support@domaru.app',
         });
       }
       if (req.method === 'GET' && url.pathname === '/health') return send(res, 200, { ok: true });
       if (req.method === 'GET' && url.pathname === '/.well-known/ucp') return send(res, 200, ucpProfile(base));
       if (url.pathname.startsWith('/ucp/') && await new Ucp(store, { base }).handle(req, res, url, { readBody, send, bearer })) return;
-      if (req.method === 'GET' && /^\/approvals\/[^/]+$/.test(url.pathname)) {
-        return send(res, 200, messagePage('Waiting for the account owner', 'This order is outside the spending limits the account owner set, so it is waiting for them. Nothing has been charged. The owner approves or declines it with their owner key.'), 'text/html');
-      }
-      if (req.method === 'GET' && url.pathname === '/terms') return send(res, 200, termsPage(), 'text/html');
-      if (req.method === 'GET' && url.pathname === '/privacy') return send(res, 200, privacyPage(), 'text/html');
-      if (url.pathname === '/admin' || url.pathname.startsWith('/admin/')) return await handleAdmin(store, req, res, url, adminKey);
-      if (req.method === 'GET' && url.pathname === '/setup/complete') {
-        try {
-          const done = await store.completeCardSetup(url.searchParams.get('session_id') ?? '');
-          if (done.payment_method.type === 'bank') {
-            return send(res, 200, messagePage('Bank account connected', 'Your deliveries are now paid from your bank account, and you save 2% on every one. You can close this tab.'), 'text/html');
-          }
-          return send(res, 200, messagePage('Card saved', 'Your card is saved for Domaru orders. You can close this tab; your agent will take it from here.'), 'text/html');
-        } catch (err) {
-          return send(res, err.status ?? 500, messagePage('Card not saved', err.hint ?? 'Something went wrong. Please try the link again.'), 'text/html');
-        }
-      }
-      if (req.method === 'GET' && url.pathname === '/setup/canceled') return send(res, 200, messagePage('Nothing saved', 'You closed the page before saving. Ask your agent for a new link when you are ready.'), 'text/html');
       if (req.method === 'GET' && url.pathname === '/openapi.json') return send(res, 200, openapi(table, base));
       if (req.method === 'GET' && url.pathname === '/llms.txt') return send(res, 200, llmsTxt(table, base), 'text/plain');
 
@@ -248,6 +238,9 @@ export function createApp(store, { baseUrl, adminKey } = {}) {
       if (route.auth === 'agent' || route.auth === 'owner') auth = store.authenticate(key);
       else if (route.auth === 'optional' && key) auth = store.authenticate(key);
 
+      if ((route.path === '/v1/accounts' && !limits.accounts.hit(clientIp(req))) || (/setup_link$/.test(route.path) && !limits.setup.hit(clientIp(req)))) {
+        throw new ApiError(429, 'rate_limited', 'Too many requests from this network.', { hint: 'Try again in an hour.' });
+      }
       const run = () => route.handler({ auth, params, query, body });
       const idemKey = req.headers['idempotency-key'];
       const result = auth && idemKey && req.method !== 'GET'
@@ -257,7 +250,7 @@ export function createApp(store, { baseUrl, adminKey } = {}) {
       return send(res, status, result);
     } catch (err) {
       if (err instanceof ApiError) {
-        if (url.pathname.startsWith('/admin') && !(req.headers['content-type'] ?? '').includes('json')) return send(res, err.status, messagePage('Could not update order', err.message), 'text/html');
+        if (url.pathname.startsWith('/admin') && !(req.headers['content-type'] ?? '').includes('json')) return send(res, err.status, messagePage("That didn't work", err.message, { action: { href: '/admin', label: 'Back to orders' } }), 'text/html');
         return send(res, err.status, err.toJSON());
       }
       console.error(err);
@@ -266,7 +259,7 @@ export function createApp(store, { baseUrl, adminKey } = {}) {
   };
 }
 
-export function startServer(store, { port = 8787, host = '0.0.0.0', baseUrl, adminKey } = {}) {
-  const server = createServer(createApp(store, { baseUrl, adminKey }));
+export function startServer(store, { port = 8787, host = '0.0.0.0', baseUrl, adminKey, stripeWebhookSecret } = {}) {
+  const server = createServer(createApp(store, { baseUrl, adminKey, stripeWebhookSecret }));
   return new Promise((resolve) => server.listen(port, host, () => resolve(server)));
 }
