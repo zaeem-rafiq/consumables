@@ -1614,7 +1614,7 @@ export class Store {
         retailer_order_id: sh.retailer_order_id, retailer_canceled_at: sh.retailer_canceled_at, problem: sh.problem,
         late: !['delivered', 'canceled'].includes(sh.status) && sh.estimated_delivery_date < today,
       },
-      cases: this.db.prepare('SELECT * FROM cases WHERE order_id = ? ORDER BY created_at').all(o.id).map((c) => this.#presentCase(c)),
+      cases: this.db.prepare('SELECT * FROM cases WHERE order_id = ? ORDER BY created_at').all(o.id).map((c) => ({ ...this.#presentCase(c), value_cents: c.value_cents, proof_reason: c.proof_reason, reported_by: c.reported_by })),
       refundable_cents: this.#refundable(o),
     };
   }
