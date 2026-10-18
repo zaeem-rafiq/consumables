@@ -22,3 +22,5 @@ One row per full run. "Tasks" is the share of task runs where every check passed
 | 2026-10-18 | 32c5382 | round 6 baseline, the 9 harder tasks only | claude-haiku-5-5 | 3 | 52% | 84% |
 | 2026-10-18 | 4623b04 | round 6: skip one item, supply_check on subscriptions, tighter plans (9 harder tasks only) | claude-sonnet-5-5 | 3 | 81% | 96% |
 | 2026-10-18 | 4623b04 | round 6: same (9 harder tasks only) | claude-haiku-5-5 | 3 | 78% | 94% |
+| 2026-10-18 | 4623b04 | REST baseline: plain HTTP + llms.txt instead of MCP (36 tasks) [REST] | claude-sonnet-5-5 | 2 | 88% | 97% |
+| 2026-10-18 | 4623b04 | REST baseline (36 tasks) [REST] | claude-haiku-5-5 | 2 | 93% | 98% |

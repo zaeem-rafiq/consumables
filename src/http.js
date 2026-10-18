@@ -113,6 +113,11 @@ function llmsTxt(table, baseUrl) {
 
 ## Rules
 - Send an Idempotency-Key header on POST/PATCH so retries never double-order.
+- POST /v1/recommendations returns a plan of one to three deliveries (frequent first, slow for long-lasting items). Create one subscription per plan entry so every item is covered.
+- Quote before you buy: the quote's already_coming lists items already on an open order or a subscription due within a week, so you don't buy them twice.
+- Subscriptions show lasts_days per item and a supply_check when a delivery runs short or piles up before the next one. Fix it (quantity or cadence_days) rather than leaving it.
+- When household_size changes, PATCH /v1/account returns subscriptions_to_adjust: update those quantities or cadences in the same session.
+- Addresses you add are one-offs (pass address_id on that order) unless set_default is true, which you only send for a move.
 - Orders over the owner's spend policy come back with status "requires_approval". Domaru emails the owner an Approve / Decline link. Tell the human; do not retry. You can never approve or change limits.
 - Something wrong with a delivery? POST /v1/orders/{id}/problems, then read back GET /v1/cases. Changed your mind before it was bought? POST /v1/orders/{id}/cancel (full refund). You cannot issue refunds.
 - Support: ${SUPPORT}. Charges show on statements as DOMARU.
