@@ -48,6 +48,14 @@ function fakeStripe() {
       if (!s) return reply(404, { error: { type: 'invalid_request_error', message: 'No such session' } });
       return reply(200, s);
     }
+    if (method === 'POST' && u.pathname === '/v1/tax/calculations') {
+      // A flat 9% stands in for Arkansas state plus local rates; shipping is taxed too.
+      const base = Object.entries(params).filter(([k]) => /^line_items\[\d+\]\[amount\]$/.test(k) || k === 'shipping_cost[amount]').reduce((s, [, v]) => s + Number(v), 0);
+      return reply(200, { id: `taxcalc_${++n}`, tax_amount_exclusive: params['customer_details[address][state]'] === 'AR' ? Math.round(base * 0.09) : 0 });
+    }
+    if (method === 'POST' && u.pathname === '/v1/tax/transactions/create_from_calculation') return reply(200, { id: `tax_${++n}` });
+    if (method === 'POST' && u.pathname === '/v1/refunds') return reply(200, { id: `re_${++n}`, status: 'succeeded' });
+    if (method === 'POST' && u.pathname === '/v1/tax/transactions/create_reversal') return reply(200, { id: `tax_${++n}` });
     return reply(404, { error: { message: `fake stripe: no route ${method} ${u.pathname}` } });
   };
   /** Simulate the human finishing the hosted card page. */
@@ -217,4 +225,31 @@ test('a bounced Stripe bank debit fails the order', async () => {
   assert.equal(after.status, 'payment_failed');
   assert.equal(after.charges[0].failure_code, 'insufficient_funds');
   assert.equal(after.shipment, null);
+});
+
+test('Stripe Tax: exact tax for the address, recorded once paid, reversed on refund', async () => {
+  const { store, agent, stripe } = await stripeStore();
+  await store.addPaymentMethod(agent, { token: 'pm_card_visa' });
+  const order = await store.createOrder(agent, { items: [{ sku: 'TP-2PLY-30', quantity: 1 }, { sku: 'NAP-500', quantity: 1 }] });
+  assert.equal(order.status, 'paid');
+  const goods = order.amounts.subtotal_cents;
+  const calc = stripe.calls.find((c) => c.path === '/v1/tax/calculations');
+  assert.equal(calc.params['customer_details[address][state]'], 'AR');
+  assert.equal(calc.params['customer_details[address_source]'], 'shipping');
+  assert.equal(Number(calc.params['line_items[0][amount]']) + Number(calc.params['line_items[1][amount]']), goods);
+  assert.equal(order.amounts.tax_cents, Math.round((goods + order.amounts.shipping_cents) * 0.09));
+  const pi = stripe.calls.find((c) => c.path === '/v1/payment_intents');
+  assert.equal(pi.params.amount, String(order.amounts.total_cents), 'the charge includes the exact tax');
+
+  await new Promise((r) => setImmediate(r));
+  const rec = stripe.calls.find((c) => c.path === '/v1/tax/transactions/create_from_calculation');
+  assert.match(rec.params.calculation, /^taxcalc_/);
+  assert.equal(rec.params.reference, order.id);
+  assert.equal(rec.idempotencyKey, `taxtxn-${order.id}`);
+
+  await store.cancelOrder(agent, order.id);
+  const rev = stripe.calls.find((c) => c.path === '/v1/tax/transactions/create_reversal');
+  assert.equal(rev.params.mode, 'partial');
+  assert.equal(rev.params.flat_amount, String(-order.amounts.total_cents));
+  assert.ok(rev.params.original_transaction.startsWith('tax_'));
 });

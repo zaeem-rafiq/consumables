@@ -2,6 +2,8 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { setup } from './helpers.js';
 import { ApiError } from '../src/errors.js';
+import { Store } from '../src/store.js';
+import { MockPayments } from '../src/payments.js';
 
 const TP = { sku: 'TP-2PLY-30', quantity: 1 };
 const PT = { sku: 'PT-2PLY-12', quantity: 1 };
@@ -16,18 +18,50 @@ test('catalog search and unknown sku hint', async () => {
   assert.throws(() => store.listProducts({ category: 'garden' }), (e) => e.code === 'unknown_category');
 });
 
-test('pricing: subscription discount, free shipping threshold, tax', async () => {
+test('pricing: subscription discount, free shipping threshold, tax only where Domaru collects it', async () => {
   const { store } = await setup();
   const small = await store.price([{ sku: 'NAP-500', quantity: 1 }], { subscription: false });
-  assert.deepEqual(small.amounts, { subtotal_cents: 599, discount_cents: 0, bank_discount_cents: 0, shipping_cents: 599, tax_cents: 48, total_cents: 1246, currency: 'usd' });
-  const big = await store.price([TP, PT], { subscription: true });
+  assert.deepEqual(small.amounts, { subtotal_cents: 599, discount_cents: 0, bank_discount_cents: 0, shipping_cents: 599, tax_cents: 0, total_cents: 1198, currency: 'usd' });
+  assert.equal(store.price([{ sku: 'NAP-500', quantity: 1 }], { region: 'NY' }).amounts.tax_cents, 0, 'no tax outside Arkansas');
+  // Arkansas taxes delivery charges too, so the estimate covers goods and shipping.
+  assert.equal(store.price([{ sku: 'NAP-500', quantity: 1 }], { region: 'ar' }).amounts.tax_cents, 144);
+  const big = await store.price([TP, PT], { subscription: true, region: 'AR' });
   assert.equal(big.amounts.subtotal_cents, 4898);
   assert.equal(big.amounts.discount_cents, 245);
   assert.equal(big.amounts.shipping_cents, 0);
-  assert.equal(big.amounts.total_cents, 4898 - 245 + 372);
-  const bank = await store.price([TP, PT], { subscription: true, bank: true });
+  assert.equal(big.amounts.total_cents, 4898 - 245 + 558);
+  const bank = await store.price([TP, PT], { subscription: true, bank: true, region: 'AR' });
   assert.equal(bank.amounts.bank_discount_cents, 98);
-  assert.equal(bank.amounts.total_cents, 4898 - 245 - 98 + 364);
+  assert.equal(bank.amounts.total_cents, 4898 - 245 - 98 + 547);
+});
+
+test('orders use the exact tax from the payment provider, record it once paid, and reverse it on refund', async () => {
+  const calls = [];
+  const payments = new MockPayments();
+  payments.calculateTax = async ({ address, lines, shippingCents }) => {
+    calls.push(['calc', address.region, lines.reduce((s, l) => s + l.amount_cents, 0), shippingCents]);
+    return { tax_cents: 401, ref: 'taxcalc_1' };
+  };
+  payments.recordTax = async ({ calculationRef, orderId }) => { calls.push(['record', calculationRef, orderId]); return { ref: 'tax_1' }; };
+  payments.reverseTax = async ({ transactionRef, amountCents }) => { calls.push(['reverse', transactionRef, amountCents]); return { ref: 'tax_2' }; };
+  const { store, agent, owner } = await setup({ store: new Store({ payments }) });
+
+  const order = await store.createOrder(agent, { items: [TP, PT] });
+  assert.equal(order.status, 'paid');
+  assert.equal(order.amounts.tax_cents, 401);
+  assert.equal(order.amounts.total_cents, 4898 + 401);
+  assert.deepEqual(calls[0], ['calc', 'AR', 4898, 0]);
+  await new Promise((r) => setImmediate(r));
+  assert.deepEqual(calls[1], ['record', 'taxcalc_1', order.id]);
+
+  await store.cancelOrder(agent, order.id);
+  assert.deepEqual(calls[2], ['reverse', 'tax_1', 4898 + 401]);
+
+  // Out of state: no tax, and the provider is never asked.
+  store.addAddress(owner, { name: 'Lake house', line1: '2 Shore Rd', city: 'Tulsa', region: 'OK', postal_code: '74103', set_default: true });
+  const ok = await store.createOrder(agent, { items: [TP, PT] });
+  assert.equal(ok.amounts.tax_cents, 0);
+  assert.equal(calls.length, 3);
 });
 
 test('recommendations scale with household size', async () => {
@@ -221,7 +255,7 @@ test('bank payers are charged ahead and ship only once the money clears', async 
   assert.equal(order.status, 'payment_pending');
   assert.equal(order.ship_date, '2026-02-02');
   assert.equal(order.shipment, null);
-  assert.equal(order.amounts.total_cents, 4898 - 245 - 98 + 364);
+  assert.equal(order.amounts.total_cents, 4898 - 245 - 98 + 547);
   assert.equal(order.charges.length, 1, 'one charge per delivery');
   const [, first] = store.listOrders(agent, { subscription_id: sub.id });
   assert.equal(store.getAccount(agent.accountId).spend.spent_cents, first.amounts.total_cents + order.amounts.total_cents, 'pending debits count toward the monthly limit');

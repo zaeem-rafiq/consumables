@@ -239,7 +239,7 @@ export function landingBody({ base = '' } = {}) {
   const host = base.replace(/^https?:\/\//, '') || 'this site';
   const get = (sku) => PRODUCTS.find((p) => p.sku === sku);
   const tp = get('TP-2PLY-30'); const trash = get('TRASH-13G-90'); const pods = get('DW-PODS-115');
-  const tax = (c) => Math.round(c * 0.08);
+  const tax = (c) => Math.round(c * 0.095); // a typical Arkansas combined rate
   const first = tp.price_cents + trash.price_cents; const firstTotal = first + tax(first);
   const stock = pods.price_cents * 8; const stockTotal = stock + tax(stock);
   const rails = [SHELF.slice(0, 4), SHELF.slice(4)].map((r) => `<div class="rail">${r.map((s) => tag(get(s))).join('')}</div>`).join('');

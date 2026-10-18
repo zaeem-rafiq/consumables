@@ -61,8 +61,9 @@ Not done yet: Stripe's shared payment token handler (needs a Stripe network prof
 | `RESEND_API_KEY`, `EMAIL_FROM` | Sends owner emails through Resend. Without it emails are only recorded (see `/admin/emails`). |
 | `SUPPORT_EMAIL` | Shown on every page and email, and receives problem reports (default `support@domaru.app`) |
 | `REFUND_NO_QUESTIONS_CENTS`, `CLAIM_LIMIT`, `CLAIM_WINDOW_DAYS` | Problem-report rules (defaults $40, 2 claims, 90 days) |
+| `TAX_STATES`, `TAX_ESTIMATE_PCT` | States Domaru collects sales tax in (default `AR`) and the rate quotes show, which is the most an order is charged (default 12) |
 
-Use a Stripe **restricted key** (`rk_live_...`) with write access to Customers, SetupIntents, PaymentIntents, Checkout Sessions and Refunds, and read access to PaymentMethods and Disputes. Nothing else is needed, so a leaked key can't move money out.
+Use a Stripe **restricted key** (`rk_live_...`) with write access to Customers, SetupIntents, PaymentIntents, Checkout Sessions, Refunds and Tax Calculations and Transactions, and read access to PaymentMethods and Disputes. Nothing else is needed, so a leaked key can't move money out.
 
 Live mode (an `sk_live_` or `rk_live_` key) refuses to start unless `FULFILLMENT=manual` and `ADMIN_KEY` are set, so real orders always reach a person.
 
@@ -76,13 +77,15 @@ See [docs/STRATEGY.md](docs/STRATEGY.md) for how this becomes the default store 
 
 Each price is set from the Walmart cost by `priceFromCost` in `src/catalog.js`: it covers about 8% sales tax paid to Walmart and card fees, and keeps about 25% of the subscription price. Change `TARGET_MARGIN` to move every price at once.
 
+Sales tax is added only for deliveries to `TAX_STATES` (Arkansas), on goods and shipping. Quotes show it at `TAX_ESTIMATE_PCT`, at or above Arkansas's highest combined rate, so the quote is the most an order costs; a placed order gets the exact rate for its address from Stripe Tax, records the sale once paid (`/v1/tax/transactions`), and reverses it on refunds. Without Stripe Tax (or if it fails) the estimate is charged and the failure is logged.
+
 ## Run it
 
 Requires Node 22.5+. It uses the built-in `node:sqlite`, so there are no native dependencies.
 
 ```bash
 npm install
-npm test          # 69 tests: store, HTTP API, MCP, UCP, Stripe (faked API), fulfillment, security, refunds and problems
+npm test          # 71 tests: store, HTTP API, MCP, UCP, Stripe (faked API), fulfillment, security, refunds and problems
 npm start         # HTTP API + remote MCP on http://localhost:8787 (see Configuration below)
 npm run mcp       # local MCP server over stdio
 ```

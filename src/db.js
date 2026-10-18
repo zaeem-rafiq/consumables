@@ -198,6 +198,8 @@ export function openDb(path = ':memory:') {
     if (!cols.includes(col)) db.exec(`ALTER TABLE ${table} ADD COLUMN ${col} ${ddl}`);
   };
   addCol('accounts', 'provider_customer_id', 'TEXT');
+  addCol('orders', 'tax_ref', 'TEXT');
+  addCol('orders', 'tax_txn', 'TEXT');
   addCol('accounts', 'owner_claim_hash', 'TEXT');
   addCol('accounts', 'owner_claimed_at', 'TEXT');
   addCol('accounts', 'hold_reason', 'TEXT');
