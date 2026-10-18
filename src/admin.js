@@ -9,7 +9,7 @@ import { layout, esc, usd, day } from './ui.js';
 
 const addressText = (a) => [a.name, a.line1, a.line2, `${a.city}, ${a.region} ${a.postal_code}`, a.phone].filter(Boolean).join('\n');
 const signOut = '<a href="/admin/emails">Email log</a><form method="post" action="/admin/logout"><button class="linkbtn">Sign out</button></form>';
-const KIND = { never_arrived: 'Never arrived', damaged: 'Damaged', wrong_item: 'Wrong item', missing_item: 'Missing item', charged_wrong: 'Charged wrong', other: 'Other' };
+const KIND = { never_arrived: 'Never arrived', damaged: 'Damaged', wrong_item: 'Wrong item', missing_item: 'Missing item', charged_wrong: 'Charged wrong', return: 'Return', other: 'Other' };
 
 export function adminLoginPage({ error } = {}) {
   return layout('Operator sign-in', `<div class="stack">
@@ -136,6 +136,6 @@ export function emailLogPage(emails) {
     <p><a href="/admin">← All orders</a></p>
     <h1 class="title">Email log</h1>
     <p class="muted">Every email the store sent or queued, newest first. Without an email provider configured they are only recorded here.</p>
-    ${emails.map((e) => `<details class="panel"><summary><strong>${esc(e.subject)}</strong> <span class="small muted">to ${esc(e.to)} · ${esc(e.created_at.slice(0, 16).replace('T', ' '))} · ${esc(e.status)}</span></summary><iframe class="mail" sandbox="" title="${esc(e.subject)}" srcdoc="${esc(renderEmail(e))}"></iframe><details class="small"><summary>Plain-text version</summary><pre style="white-space:pre-wrap;font:inherit;margin:1rem 0 0">${esc(e.body)}</pre></details></details>`).join('') || '<p class="muted">No email yet.</p>'}
+    ${emails.map((e) => `<details class="panel"><summary><strong>${esc(e.subject)}</strong> <span class="small muted">to ${esc(e.to)} · ${esc(e.created_at.slice(0, 16).replace('T', ' '))} · ${esc(e.status)}</span></summary><iframe class="mail" sandbox="" title="${esc(e.subject)}" srcdoc="${esc(renderEmail(e, { base: "" }))}"></iframe><details class="small"><summary>Plain-text version</summary><pre style="white-space:pre-wrap;font:inherit;margin:1rem 0 0">${esc(e.body)}</pre></details></details>`).join('') || '<p class="muted">No email yet.</p>'}
   </div>`, { wide: true, right: signOut, robots: false });
 }

@@ -74,6 +74,20 @@ const okRedirect = (u) => {
 const isEmail = (s) => typeof s === 'string' && /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(s) && s.length <= 254;
 const BANK_OFFER = `Switch to bank payments and save ${PRICING.bank_discount_pct}% on every delivery.`;
 
+/** "Thursday, October 22" for a YYYY-MM-DD date, as people read it in email. */
+const longDate = (d) => new Date(`${d}T12:00:00Z`).toLocaleDateString('en-US', { weekday: 'long', month: 'long', day: 'numeric', timeZone: 'UTC' });
+
+/** The carrier's own tracking page, when we know it. */
+function trackingUrl(carrier, number) {
+  const n = encodeURIComponent(number);
+  return {
+    ups: `https://www.ups.com/track?tracknum=${n}`,
+    fedex: `https://www.fedex.com/fedextrack/?trknbr=${n}`,
+    usps: `https://tools.usps.com/go/TrackConfirmAction?tLabels=${n}`,
+    ontrac: `https://www.ontrac.com/tracking/?number=${n}`,
+  }[String(carrier).toLowerCase()] ?? null;
+}
+
 export class Store {
   /**
    * @param {object} opts
@@ -543,7 +557,7 @@ export class Store {
       throw badRequest('setup_links_unavailable', 'Card setup links need the Stripe payment provider.', { hint: 'In the sandbox, call add_payment_method with token pm_card_visa instead.' });
     }
     const a = this.#account(auth.accountId);
-    const link = await this.payments.createSetupLink({ customerRef: await this.#customer(a), accountId: a.id });
+    const link = await this.payments.createSetupLink({ customerRef: await this.#customer(a), accountId: a.id, publicUrl: this.publicUrl });
     return { url: link.url, expires_at: link.expires_at, next_step: 'Send this link to the account owner. Once they save a card it becomes the default payment method; check with list_payment_methods.' };
   }
 
@@ -554,7 +568,7 @@ export class Store {
     if (!this.payments.supportsSetupLinks) {
       throw badRequest('setup_links_unavailable', 'Bank setup links need the Stripe payment provider.', { hint: 'In the sandbox, call add_payment_method with token pm_usBankAccount_success instead.' });
     }
-    const link = await this.payments.createSetupLink({ customerRef: await this.#customer(a), accountId: a.id, type: 'bank' });
+    const link = await this.payments.createSetupLink({ customerRef: await this.#customer(a), accountId: a.id, type: 'bank', publicUrl: this.publicUrl });
     return {
       url: link.url, expires_at: link.expires_at, offer: BANK_OFFER,
       next_step: 'Send this link to the account owner. They sign in to their bank on a Stripe page; the account becomes the default and their subscriptions switch to it. Bank payments are charged a few business days before each delivery ships.',
@@ -565,7 +579,7 @@ export class Store {
   async completeCardSetup(sessionId) {
     const done = await this.payments.completeSetup(sessionId);
     if (!done) throw badRequest('setup_incomplete', 'This card setup has not been completed.', { hint: 'Open the setup link again and finish saving the card.' });
-    const a = this.db.prepare('SELECT * FROM accounts WHERE id = ? AND provider_customer_id = ?').get(done.accountId, done.customerRef);
+    const a = this.db.prepare('SELECT * FROM accounts WHERE id = ? AND provider_customer_id IS ?').get(done.accountId, done.customerRef);
     if (!a) throw notFound('account', done.accountId);
     return { account_id: a.id, payment_method: this.#savePm(this.#account(a.id), done.card, true) };
   }
@@ -1101,7 +1115,7 @@ export class Store {
     if (o.status !== 'paid') throw conflict('order_not_cancelable', `Order is ${o.status}.`);
     const sh = this.db.prepare('SELECT * FROM shipments WHERE order_id = ?').get(o.id);
     if (sh && !['awaiting_fulfillment', 'processing'].includes(sh.status)) {
-      throw conflict('order_already_bought', 'This order has already been bought from the retailer, so it can no longer be canceled.', { hint: 'If something is wrong with it, use report_problem (POST /v1/orders/{id}/problems).' });
+      throw conflict('order_already_bought', 'This order has already been bought from the retailer, so it can no longer be canceled.', { hint: "If they don't want it, it can be returned unopened within 30 days of delivery: report_problem with kind 'return' (POST /v1/orders/{id}/problems), listing only the items going back. If something is wrong with it, report that kind instead." });
     }
     if (sh) this.db.prepare("UPDATE shipments SET status = 'canceled' WHERE id = ?").run(sh.id);
     this.db.prepare("UPDATE orders SET status = 'canceled', updated_at = ? WHERE id = ?").run(account.clock, o.id);
@@ -1151,11 +1165,11 @@ export class Store {
     return this.#presentOrder(this.db.prepare('SELECT * FROM orders WHERE id = ?').get(orderId));
   }
 
-  static PROBLEM_KINDS = ['never_arrived', 'damaged', 'wrong_item', 'missing_item', 'charged_wrong', 'other'];
+  static PROBLEM_KINDS = ['never_arrived', 'damaged', 'wrong_item', 'missing_item', 'charged_wrong', 'return', 'other'];
   static CLAIM_KINDS = ['never_arrived', 'damaged', 'missing_item'];
 
   /** Agents (and owners) report a problem with an order. Only the operator moves money. */
-  reportProblem(auth, orderId, { kind, note, photo_url, skus, preferred } = {}, reportedBy = auth.role) {
+  reportProblem(auth, orderId, { kind, note, photo_url, skus, quantities, preferred } = {}, reportedBy = auth.role) {
     const account = this.#account(auth.accountId);
     const o = this.#orderRow(account.id, orderId);
     if (!Store.PROBLEM_KINDS.includes(kind)) throw badRequest('invalid_param', `kind must be one of: ${Store.PROBLEM_KINDS.join(', ')}.`, { param: 'kind' });
@@ -1168,10 +1182,24 @@ export class Store {
     if (skus != null && (!Array.isArray(skus) || skus.some((sku) => !lines.some((l) => l.sku === sku)))) {
       throw badRequest('invalid_param', 'skus must list SKUs from this order.', { param: 'skus', hint: `This order has: ${lines.map((l) => l.sku).join(', ')}.` });
     }
+    if (quantities != null && (typeof quantities !== 'object' || Object.entries(quantities).some(([sku, q]) => !lines.some((l) => l.sku === sku && Number.isInteger(q) && q >= 1 && q <= l.quantity)))) {
+      throw badRequest('invalid_param', 'quantities maps a SKU from this order to how many of it are affected (1 up to the quantity ordered).', { param: 'quantities' });
+    }
+    if (kind === 'return') {
+      // Unopened items, within 30 days of delivery (refund policy). Opened goods can't come back unless something is wrong.
+      const sh = this.db.prepare('SELECT * FROM shipments WHERE order_id = ?').get(o.id);
+      if (sh && ['awaiting_fulfillment', 'processing'].includes(sh.status)) {
+        throw conflict('return_not_needed', 'This order has not been bought from the retailer yet.', { hint: 'Cancel it instead for a full refund: cancel_order (POST /v1/orders/{id}/cancel).' });
+      }
+      if (sh?.delivered_at && dateOf(sh.delivered_at) < addDays(dateOf(account.clock), -30)) {
+        throw conflict('return_window_closed', `Returns are accepted within 30 days of delivery; this order arrived on ${dateOf(sh.delivered_at)}.`, { hint: 'If something is wrong with it (damaged, wrong item), report that kind instead.' });
+      }
+    }
     const open = this.db.prepare("SELECT * FROM cases WHERE order_id = ? AND kind = ? AND status = 'open'").get(o.id, kind);
     if (open) return this.#presentCase(open);
 
-    const affected = skus?.length ? lines.filter((l) => skus.includes(l.sku)) : lines;
+    const affected = (skus?.length ? lines.filter((l) => skus.includes(l.sku)) : lines)
+      .map((l) => (quantities?.[l.sku] ? { ...l, quantity: quantities[l.sku], line_total_cents: Math.round((l.line_total_cents * quantities[l.sku]) / l.quantity) } : l));
     const value = affected.reduce((sum, l) => sum + l.line_total_cents, 0);
     const since = addDays(dateOf(account.clock), -this.support.claim_window_days);
     const prior = this.db.prepare(`SELECT COUNT(*) AS n FROM cases WHERE account_id = ? AND kind IN (${Store.CLAIM_KINDS.map(() => '?').join(', ')}) AND substr(created_at, 1, 10) >= ?`)
@@ -1181,9 +1209,9 @@ export class Store {
     else if (['never_arrived', 'damaged', 'missing_item', 'wrong_item'].includes(kind) && value > this.support.no_questions_refund_cents) proof = 'over_limit';
 
     const caseId = id('case');
-    this.db.prepare(`INSERT INTO cases (id, account_id, order_id, kind, note, photo_url, skus_json, preferred, value_cents, needs_proof, proof_reason, status, reported_by, created_at, updated_at)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'open', ?, ?, ?)`).run(caseId, account.id, o.id, kind, note ?? null, photo_url ?? null, j(affected.map((l) => l.sku)), preferred ?? null,
-      value, proof ? 1 : 0, proof, reportedBy, account.clock, account.clock);
+    this.db.prepare(`INSERT INTO cases (id, account_id, order_id, kind, note, photo_url, skus_json, quantities_json, preferred, value_cents, needs_proof, proof_reason, status, reported_by, created_at, updated_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'open', ?, ?, ?)`).run(caseId, account.id, o.id, kind, note ?? null, photo_url ?? null, j(affected.map((l) => l.sku)),
+      j(Object.fromEntries(affected.map((l) => [l.sku, l.quantity]))), preferred ?? null, value, proof ? 1 : 0, proof, reportedBy, account.clock, account.clock);
     this.#emit(account.id, 'case.opened', { case_id: caseId, order_id: o.id, kind });
     const c = this.#presentCase(this.db.prepare('SELECT * FROM cases WHERE id = ?').get(caseId));
     this.#mailSupport('case_opened', `[${kind.replace(/_/g, ' ')}] ${account.name}, order ${o.id}`, [
@@ -1216,14 +1244,17 @@ export class Store {
 
   #presentCase(c) {
     const proof = c.needs_proof
-      ? (c.kind === 'damaged' ? ' Because of the amount or recent claims, we need a photo first: pass photo_url or reply to our email with one.' : ' Because of the amount or recent claims, we check the carrier\'s delivery record first.')
+      ? (c.kind === 'damaged' ? ' Because of the amount or recent claims, we need a photo first: pass photo_url or reply to our email with one.' : c.kind === 'never_arrived' ? ' Because of the amount or recent claims, we check the carrier\'s delivery record first, usually within one business day, and then refund or resend it.' : ' Because of the amount or recent claims, we check the carrier\'s delivery record first.')
       : '';
     const next = {
       never_arrived: "Packages often turn up within a day at a neighbor's door or in the mailbox. If it still hasn't, we refund or resend it, the household's choice.",
-      damaged: 'We refund or resend the damaged items. No need to send anything back.',
+      damaged: c.needs_proof ? 'Once we have the photo, we refund or resend the damaged items. No need to send anything back.' : 'We refund or resend the damaged items. No need to send anything back.',
       wrong_item: 'We send the right item. Keep the wrong one; no need to send it back.',
       missing_item: 'Big orders sometimes come in two boxes. If the item is not in a second box, we refund or resend it.',
       charged_wrong: 'We check the charge and refund anything extra.',
+      return: c.value_cents < 1500
+        ? `Keep it: for returns under $15 we refund without sending anything back. The refund goes to the original payment method once our team approves it, usually within one business day.`
+        : `We email a prepaid return label within one business day. Send it back unopened within 30 days of delivery; we refund the item price once the retailer accepts it, usually within two weeks.`,
       other: `Our support team will reply by email within one business day (${this.support.email}).`,
     }[c.kind];
     const done = {
@@ -1232,7 +1263,7 @@ export class Store {
       closed: c.resolution ?? 'Closed.',
     }[c.status];
     return {
-      id: c.id, order_id: c.order_id, kind: c.kind, status: c.status, note: c.note, photo_url: c.photo_url, skus: p(c.skus_json),
+      id: c.id, order_id: c.order_id, kind: c.kind, status: c.status, note: c.note, photo_url: c.photo_url, skus: p(c.skus_json), quantities: c.quantities_json ? p(c.quantities_json) : undefined, value_cents: c.value_cents,
       preferred: c.preferred, needs_proof: !!c.needs_proof, resolution: c.resolution, resend_order_id: c.resend_order_id, refund_cents: c.refund_cents,
       what_happens_next: done ?? next + proof, created_at: c.created_at, updated_at: c.updated_at,
     };
@@ -1364,7 +1395,7 @@ export class Store {
       `Your assistant started a subscription for ${account.name}. It renews automatically every ${cadence_days} days until you or your assistant cancel it.`,
       '',
       ...priced.lines.map((l) => `${l.quantity} x ${l.name}  ${usd(l.line_total_cents)}`),
-      `Each delivery: about ${usd(priced.amounts.total_cents)} including tax and shipping. First delivery ships ${start_date ?? today}.`,
+      `Each delivery: about ${usd(priced.amounts.total_cents)} including tax and shipping. First delivery ships ${longDate(start_date ?? today)}.`,
       '',
       `To pause, skip or cancel, ask your assistant, or write to ${this.support.email} and we'll do it for you. Prices can change; we'll email you at least 7 days before any increase.`,
     ]);
@@ -1768,7 +1799,8 @@ export class Store {
     this.#emit(sh.account_id, 'shipment.shipped', { shipment_id: sh.id, order_id: orderId, carrier, tracking_number });
     const a = this.#account(sh.account_id);
     this.#mail(a, 'shipped', a.email, 'Your Domaru order is on the way', [
-      `Order ${orderId} has shipped with ${carrier}. Tracking: ${tracking_number}.`,
+      `Order ${orderId} has shipped with ${carrier}. Tracking number: ${tracking_number}.`,
+      ...(trackingUrl(carrier, tracking_number) ? [trackingUrl(carrier, tracking_number), ''] : []),
       'The box may come from Walmart or Amazon; we buy from them and ship straight to you.',
       `Problem with it? Tell your assistant, or reply to this email.`,
     ]);
@@ -1804,7 +1836,7 @@ export class Store {
         for (const e of this.db.prepare("SELECT * FROM emails WHERE status = 'queued' ORDER BY rowid").all()) {
           let r;
           try {
-            r = await this.mailer.send({ id: e.id, from: this.support.from, replyTo: this.support.email, to: e.to_addr, subject: e.subject, text: e.body, html: renderEmail(e) });
+            r = await this.mailer.send({ id: e.id, from: this.support.from, replyTo: this.support.email, to: e.to_addr, subject: e.subject, text: e.body, html: renderEmail(e, { base: this.publicUrl }) });
           } catch (err) {
             r = { status: 'failed', error: err.message };
           }

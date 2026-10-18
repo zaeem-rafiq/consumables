@@ -141,10 +141,16 @@ test('card setup link: human saves a card on Stripe, it becomes the default', as
   assert.equal(sub.latest_order.status, 'paid');
 });
 
-test('mock payments refuse setup links with a hint', async () => {
-  const store = new Store();
-  const { api_key } = store.createAccount({ name: 'Mock', email: 'm@example.com' });
-  await assert.rejects(() => store.createCardSetupLink(store.authenticate(api_key)), (e) => e.code === 'setup_links_unavailable' && /pm_card_visa/.test(e.hint));
+test('sandbox setup links save a test card when opened', async () => {
+  const store = new Store({ publicUrl: 'https://shop.test' });
+  const { account, api_key } = store.createAccount({ name: 'Mock', email: 'm@example.com' });
+  const link = await store.createCardSetupLink(store.authenticate(api_key));
+  const id = new URL(link.url).searchParams.get('session_id');
+  assert.match(link.url, /^https:\/\/shop\.test\/setup\/complete\?session_id=mock_cs_/);
+  const done = await store.completeCardSetup(id);
+  assert.equal(done.account_id, account.id);
+  assert.equal(done.payment_method.last4, '4242');
+  await assert.rejects(() => store.completeCardSetup('mock_cs_nope'), (e) => e.code === 'setup_incomplete');
 });
 
 test('live keys refuse test tokens', async () => {

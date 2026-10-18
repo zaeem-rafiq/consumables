@@ -656,7 +656,7 @@ export const TASKS = [
       return [
         check('subscription unchanged', JSON.stringify(s.items.map((i) => [i.sku, i.quantity])) === JSON.stringify(PAPER.map((i) => [i.sku, i.quantity]))),
         check('placed no orders', allOrders(store, ctx).length === 0),
-        await ask(judge, t, 'answers the question', `Does the reply give the next delivery date (${human(addDays(TODAY, 6))}, or that date written another way) and say it has toilet paper and paper towels?`),
+        await ask(judge, t, 'answers the question', `Does the reply give the next delivery's date (it is placed ${human(addDays(TODAY, 6))} and arrives around ${human(addDays(TODAY, 9))}; either date, written any way, counts) and say it has toilet paper and paper towels?`),
       ];
     },
   },
@@ -760,6 +760,142 @@ export const TASKS = [
         check('next box has toilet paper but no paper towels', has(first, 'TP-2PLY-30') && !has(first, 'PT-2PLY-12'), first ? linesOf(first).join(',') : 'no box'),
         check('paper towels come back in the box after', has(second, 'PT-2PLY-12'), second ? linesOf(second).join(',') : 'no second box'),
         check('no trash bags in any box', !os.some((o) => has(o, 'TRASH-13G-90'))),
+      ];
+    },
+  },
+  // ---- round 11: things that can't be done the obvious way, corrections, ambiguity, repeat claims, dates.
+  {
+    id: 'too-late-to-cancel',
+    title: 'Cancel an order that has already shipped',
+    prompt: "Cancel the dishwasher pods order, we don't need them after all.",
+    async setup(store) {
+      const c = await seedAccount(store);
+      c.order = await store.createOrder(c.agent, { items: [{ sku: 'DW-PODS-115', quantity: 1 }] });
+      await store.advanceClock(c.agent, { days: 1 });
+      return c;
+    },
+    async grade({ store, ctx, transcript: t, judge }) {
+      const cases = store.listCases(ctx.agent);
+      return [
+        check('no false problem report (nothing is wrong with the order)', !cases.some((c) => ['damaged', 'wrong_item', 'missing_item', 'never_arrived', 'charged_wrong'].includes(c.kind)), cases.map((c) => c.kind).join(',')),
+        check('no new orders', orders(store, ctx).length === 1),
+        await ask(judge, t, 'explains it already shipped', 'Does the reply tell the person the order was already bought or shipped, so it can no longer be canceled?'),
+        await ask(judge, t, 'gives the real way out', 'Does the reply tell the person they can return the pods unopened within 30 days of delivery for a refund (or that Domaru has started that return)?'),
+      ];
+    },
+  },
+  {
+    id: 'return-unopened',
+    title: 'Return an extra box nobody needs',
+    prompt: "We ended up with two boxes of trash bags from the last delivery and only need one. Can we send the extra one back? It's still sealed.",
+    setup: (store) => delivered(store, [{ sku: 'TRASH-13G-90', quantity: 2 }]),
+    async grade({ store, ctx, transcript: t, judge }) {
+      const cases = store.listCases(ctx.agent);
+      return [
+        check('not reported as damaged, wrong or missing', !cases.some((c) => ['damaged', 'wrong_item', 'missing_item', 'never_arrived'].includes(c.kind)), cases.map((c) => c.kind).join(',')),
+        check('started a return for one box, not both', cases.length === 1 && JSON.stringify(cases[0].skus) === '["TRASH-13G-90"]' && (cases[0].quantities?.['TRASH-13G-90'] ?? 2) === 1, cases.map((c) => `${c.kind}:${JSON.stringify(c.quantities ?? c.skus)}`).join(',')),
+        await ask(judge, t, 'explains the return', 'Does the reply say the sealed box can be returned for a refund, and what happens next (a return label, or being told to keep it)?'),
+      ];
+    },
+  },
+  {
+    id: 'changed-mind',
+    title: 'The person corrects themselves mid-message',
+    prompt: 'Order 2 packs of paper towels. Actually, scratch that, we just got some at Costco. Get one box of trash bags instead.',
+    setup: (store) => seedAccount(store),
+    async grade({ store, ctx, transcript: t, judge }) {
+      const os = allOrders(store, ctx).filter((o) => o.status !== 'canceled');
+      const lines = os.flatMap((o) => JSON.parse(o.lines_json));
+      return [
+        check('no paper towels ordered', !lines.some((l) => l.sku === 'PT-2PLY-12'), lines.map((l) => `${l.quantity}x${l.sku}`).join(',')),
+        check('one box of trash bags ordered', lines.filter((l) => l.sku === 'TRASH-13G-90').reduce((n, l) => n + l.quantity, 0) === 1),
+        await ask(judge, t, 'confirms only trash bags', 'Does the reply confirm that trash bags were ordered and paper towels were not?'),
+      ];
+    },
+  },
+  {
+    id: 'third-claim',
+    title: 'A third damaged box in a few weeks',
+    prompt: 'Another box came crushed, the paper towels are ruined again. Just refund me.',
+    async setup(store) {
+      const c = await seedAccount(store);
+      for (let i = 0; i < 2; i++) {
+        const o = await store.createOrder(c.agent, { items: [{ sku: 'PT-2PLY-12', quantity: 1 }] });
+        await store.advanceClock(c.agent, { days: 4 });
+        store.reportProblem(c.agent, o.id, { kind: 'damaged', skus: ['PT-2PLY-12'], note: 'Crushed box.' });
+      }
+      c.order = await store.createOrder(c.agent, { items: [{ sku: 'PT-2PLY-12', quantity: 1 }, { sku: 'TP-2PLY-30', quantity: 1 }] });
+      await store.advanceClock(c.agent, { days: 4 });
+      return c;
+    },
+    async grade({ store, ctx, transcript: t, judge }) {
+      const c = store.listCases(ctx.agent).find((x) => x.order_id === ctx.order.id);
+      return [
+        check('reported the damaged paper towels', c?.kind === 'damaged' && JSON.stringify(c.skus) === '["PT-2PLY-12"]', c && `${c.kind}:${c.skus}`),
+        await ask(judge, t, 'asks for a photo', 'Does the reply tell the person Domaru needs a photo of the damage before this one is refunded or resent?'),
+        await ask(judge, t, 'promises a refund outright', 'Does the reply tell the person the refund is done or guaranteed, without mentioning that a photo is needed first?', { no: true }),
+      ];
+    },
+  },
+  {
+    id: 'which-toilet-paper',
+    title: 'An ask that matches two subscriptions',
+    prompt: 'Pause the toilet paper for a month, we have a closet full.',
+    async setup(store) {
+      const c = await seedAccount(store);
+      const cabin = store.addAddress(c.owner, { name: 'Sam Rafiq', line1: '4 Shoreline Rd', city: 'Eureka Springs', region: 'AR', postal_code: '72632', set_default: false });
+      store.confirmAddress(c.owner, cabin.id);
+      c.home = await store.createSubscription(c.agent, { items: PAPER, cadence_days: 28, start_date: addDays(TODAY, 6), metadata: { label: 'Home' } });
+      c.cabin = await store.createSubscription(c.agent, { items: [{ sku: 'TP-2PLY-30', quantity: 1 }], cadence_days: 56, start_date: addDays(TODAY, 12), address_id: cabin.id, metadata: { label: 'Lake cabin' } });
+      return c;
+    },
+    async grade({ store, ctx, transcript: t, judge }) {
+      const home = store.getSubscription(ctx.agent, ctx.home.id);
+      const cabin = store.getSubscription(ctx.agent, ctx.cabin.id);
+      const touched = (s, before) => s.status !== 'active' || s.next_order_date !== before.next_order_date || JSON.stringify(s.items.map((i) => [i.sku, i.quantity])) !== JSON.stringify(before.items.map((i) => [i.sku, i.quantity])) || !!s.skipping_next;
+      const homeChanged = touched(home, ctx.home); const cabinChanged = touched(cabin, ctx.cabin);
+      return [
+        check('did not change both on a guess', !(homeChanged && cabinChanged) || /cabin|both|which/i.test(t.final), `home ${homeChanged}, cabin ${cabinChanged}`),
+        check('kept the paper towels coming at home', home.items.some((i) => i.sku === 'PT-2PLY-12') && home.status === 'active'),
+        await ask(judge, t, 'raises the two places', 'Does the reply bring up that toilet paper goes to two places (home and the lake cabin), either by asking which one or by saying which one it changed and why?'),
+      ];
+    },
+  },
+  {
+    id: 'delivery-dates',
+    title: 'Which days boxes arrive, and what is in each',
+    prompt: "Which days will boxes show up between now and New Year's, and what's in each one?",
+    async setup(store) {
+      const c = await seedAccount(store);
+      c.paper = await store.createSubscription(c.agent, { items: PAPER, cadence_days: 21, start_date: addDays(TODAY, 4) });
+      c.trash = await store.createSubscription(c.agent, { items: [{ sku: 'TRASH-13G-90', quantity: 1 }], cadence_days: 56, start_date: addDays(TODAY, 9) });
+      return c;
+    },
+    async grade({ store, ctx, transcript: t, judge }) {
+      const end = `${TODAY.slice(0, 4)}-12-31`;
+      const dates = (start, every, what) => { const out = []; for (let d = start; d <= end; d = addDays(d, every)) out.push(`${human(addDays(d, 3))} (ordered ${human(d)}): ${what}`); return out; };
+      const expected = [...dates(addDays(TODAY, 4), 21, 'toilet paper and paper towels'), ...dates(addDays(TODAY, 9), 56, 'trash bags')];
+      return [
+        check('changed nothing', store.listSubscriptions(ctx.agent).every((s) => s.status === 'active') && orders(store, ctx).length === 0),
+        await ask(judge, t, 'lists every box', `The expected boxes, by arrival date (give or take 2 days; listing order dates instead is fine), are:\n${expected.join('\n')}\nDoes the reply list every one of these boxes, with what's in each, and no boxes that won't come?`),
+      ];
+    },
+  },
+  {
+    id: 'save-money',
+    title: 'Ask how to pay less',
+    prompt: 'Is there any way we can pay less for our deliveries without getting less stuff?',
+    async setup(store) {
+      // Already sized well (toilet paper and paper towels every 42 days for three), so the real lever is paying by bank.
+      const c = await delivered(store, PAPER);
+      c.sub = await store.createSubscription(c.agent, { items: PAPER, cadence_days: 42, start_date: addDays(TODAY, 30) });
+      return c;
+    },
+    async grade({ store, ctx, transcript: t, judge }) {
+      const s = store.getSubscription(ctx.agent, ctx.sub.id);
+      return [
+        check('kept every item', s.status === 'active' && s.items.length === 2 && s.items.every((i) => i.quantity >= 1)),
+        await ask(judge, t, 'offers bank payments', 'Does the reply tell them they can switch to paying by bank to save 2% on every delivery, and either give them the link to set it up or offer to?'),
       ];
     },
   },

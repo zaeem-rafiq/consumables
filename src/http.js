@@ -53,7 +53,7 @@ function routes(store) {
     ['GET', '/v1/orders', 'List orders (?subscription_id=, ?status=, ?limit=)', 'agent', ({ auth, query }) => ({ data: store.listOrders(auth, query) })],
     ['GET', '/v1/orders/:id', 'Get an order with charges, refunds and shipment', 'agent', ({ auth, params }) => store.getOrder(auth, params.id)],
     ['POST', '/v1/orders/:id/cancel', 'Cancel an order before it is bought from the retailer; paid orders are refunded in full { reason? }', 'agent', ({ auth, params, body }) => store.cancelOrder(auth, params.id, body)],
-    ['POST', '/v1/orders/:id/problems', "Report a problem { kind: never_arrived|damaged|wrong_item|missing_item|charged_wrong|other, note?, photo_url?, skus?, preferred?: refund|resend }", 'agent', ({ auth, params, body }) => store.reportProblem(auth, params.id, body)],
+    ['POST', '/v1/orders/:id/problems', "Report a problem or start a return { kind: never_arrived|damaged|wrong_item|missing_item|charged_wrong|return|other (return = unopened items they don't want, within 30 days of delivery), note?, photo_url?, skus?, quantities?: { SKU: count } when fewer than ordered, preferred?: refund|resend }", 'agent', ({ auth, params, body }) => store.reportProblem(auth, params.id, body)],
     ['GET', '/v1/cases', 'Problem reports and what happens next (?status=open|resend_sent|refunded|closed)', 'agent', ({ auth, query }) => ({ data: store.listCases(auth, query) })],
     ['GET', '/v1/cases/:id', 'One problem report', 'agent', ({ auth, params }) => store.getCase(auth, params.id)],
 
@@ -119,7 +119,7 @@ function llmsTxt(table, baseUrl) {
 - When household_size changes, PATCH /v1/account returns subscriptions_to_adjust: update those quantities or cadences in the same session.
 - Addresses you add are one-offs (pass address_id on that order) unless set_default is true, which you only send for a move.
 - Orders over the owner's spend policy come back with status "requires_approval". Domaru emails the owner an Approve / Decline link. Tell the human; do not retry. You can never approve or change limits.
-- Something wrong with a delivery? POST /v1/orders/{id}/problems, then read back GET /v1/cases. Changed your mind before it was bought? POST /v1/orders/{id}/cancel (full refund). You cannot issue refunds.
+- Something wrong with a delivery? POST /v1/orders/{id}/problems, then read back GET /v1/cases. Changed your mind before it was bought? POST /v1/orders/{id}/cancel (full refund). After that, unopened items can go back within 30 days of delivery: POST /v1/orders/{id}/problems with kind "return" and the skus going back. Never report an unwanted item as damaged or wrong. You cannot issue refunds.
 - Support: ${SUPPORT}. Charges show on statements as DOMARU.
 - Cards are the default. After the first delivery arrives, GET /v1/account shows bank_payments.offer: tell the human they can switch to bank payments and save ${PRICING.bank_discount_pct}% on every delivery, and send them the url from POST /v1/payment_methods/bank_setup_link. Bank payers are charged a few business days before each delivery (order status "payment_pending" until it clears). A bounced bank payment is handled like a declined card.
 - Errors are { "error": { "code", "message", "hint" } }. Follow the hint.
@@ -230,6 +230,10 @@ export function createApp(store, { baseUrl, adminKey, stripeWebhookSecret } = {}
       const route = methodMatches.find((r) => r.method === req.method);
       if (!route) {
         if (methodMatches.length) throw new ApiError(405, 'method_not_allowed', `${req.method} is not supported on ${url.pathname}.`, { hint: `Allowed: ${methodMatches.map((r) => r.method).join(', ')}.` });
+        // A person who mistyped a link gets a page, not JSON.
+        if (req.method === 'GET' && !url.pathname.startsWith('/v1/') && (req.headers.accept ?? '').includes('text/html')) {
+          return send(res, 404, messagePage('Page not found', "There's nothing at this address. If you followed a link from an email, it may be old.", { action: { href: '/', label: 'Go to Domaru' } }), 'text/html; charset=utf-8');
+        }
         throw new ApiError(404, 'route_not_found', `No route ${req.method} ${url.pathname}.`, { hint: `See ${base}/llms.txt for all endpoints.` });
       }
       const m = route.re.exec(url.pathname);

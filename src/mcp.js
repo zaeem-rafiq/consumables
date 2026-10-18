@@ -16,7 +16,7 @@ Typical flow: recommend_bundle -> quote -> create_subscription (recommend_bundle
 Prices are integer cents (USD). Subscriptions get 5% off; orders of $35+ after discount ship free.
 Spend policy is set by the household's owner. An order outside it is still placed, but held with status "requires_approval": the owner gets an email with Approve and Decline buttons, and nothing is charged unless they approve. Tell the human it is waiting for the owner; do not retry, and never split it into smaller orders to stay under the limits. You cannot approve orders or change limits. The owner changes limits by signing in at ${base}/owner with their email (no password; Domaru emails a link).
 Households connect Domaru from their assistant (Connect / sign in), which sets up the address, card and limits; you then shop within those limits. Developers without an account can call create_account (it emails the owner and returns an api_key attached to this session over stdio).
-Problems with a delivery (never arrived, damaged, wrong or missing item): call report_problem; Domaru's team resolves it and you can read back the case. You cannot issue refunds. Before an order is bought from the retailer, cancel_order cancels it with a full refund.
+Problems with a delivery (never arrived, damaged, wrong or missing item): call report_problem; Domaru's team resolves it and you can read back the case. You cannot issue refunds. Before an order is bought from the retailer, cancel_order cancels it with a full refund; after that, unopened items can be returned within 30 days of delivery (report_problem, kind return).
 Cards are the default. After the first delivery arrives, get_account shows bank_payments.offer: tell the human they can switch to bank payments and save 2% on every delivery, and send them the link from create_bank_setup_link.
 Sandbox only: advance_test_clock moves time forward to simulate renewals and deliveries.`;
 
@@ -230,13 +230,14 @@ export function buildMcpServer(store, session, { attachKeyOnSignup = true } = {}
 
   tool('report_problem', {
     title: 'Report a problem with an order',
-    description: "Tell Domaru something went wrong with a delivery: never_arrived (tracking says delivered but it isn't there), damaged, wrong_item, missing_item, charged_wrong or other. Opens a case Domaru's team resolves with a refund or a free resend; read it back with get_case. Pass skus for the affected items only, a photo_url (https) for damage, and preferred: refund or resend if the household said. You cannot issue refunds yourself.",
+    description: "Tell Domaru something went wrong with a delivery: never_arrived (tracking says delivered but it isn't there), damaged, wrong_item, missing_item, charged_wrong or other. Also kind return: the household wants to send back unopened items they don't need (within 30 days of delivery; works once the order has shipped and can no longer be canceled). Never report an unwanted item as damaged or wrong. Opens a case Domaru's team resolves with a refund or a free resend; read it back with get_case. Pass skus for the affected items only, a photo_url (https) for damage, and preferred: refund or resend if the household said. You cannot issue refunds yourself.",
     input: {
       order_id: z.string(),
-      kind: z.enum(['never_arrived', 'damaged', 'wrong_item', 'missing_item', 'charged_wrong', 'other']),
+      kind: z.enum(['never_arrived', 'damaged', 'wrong_item', 'missing_item', 'charged_wrong', 'return', 'other']),
       note: z.string().max(2000).optional().describe("What the household said, in a sentence or two"),
       photo_url: z.string().url().optional(),
       skus: z.array(z.string()).optional().describe('Only the affected items; omit for the whole order'),
+      quantities: z.record(z.string(), z.number().int().min(1)).optional().describe('How many of each affected SKU, when it is fewer than were ordered, e.g. {"TRASH-13G-90": 1} to return one of two boxes'),
       preferred: z.enum(['refund', 'resend']).optional(),
     },
   }, ({ order_id, ...rest }) => store.reportProblem(auth(), order_id, rest));

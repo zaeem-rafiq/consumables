@@ -149,9 +149,13 @@ export function approvalPage({ info, token }) {
   const { approval, account } = info;
   const pending = approval.status === 'pending';
   const actions = decideButtons(() => `/owner/approvals/${esc(approval.id)}/decide`, (decision) => hidden({ t: token, decision }), approval.amount_cents);
-  return layout(pending ? 'Approve this order?' : 'Order request', `<div class="stack">
-    <h1 class="title">${pending ? 'Approve this order?' : 'Order request'}</h1>
-    <p class="lede">${pending ? 'Your assistant wants to order these supplies. They are outside the limits you set, so they wait for you.' : 'A request from your assistant.'}</p>
+  const [title, lede] = pending ? ['Approve this order?', 'Your assistant wants to order these supplies. They are outside the limits you set, so they wait for you.']
+    : approval.status === 'approved' ? ['Order approved', 'Your assistant can see that you said yes.']
+    : approval.status === 'rejected' ? ['Order declined', "Your assistant can see that you said no, and won't place it again."]
+    : ['Order request', 'A request from your assistant.'];
+  return layout(title, `<div class="stack">
+    <h1 class="title">${title}</h1>
+    <p class="lede">${lede}</p>
     ${approvalCard(info, actions)}
     <p class="small muted">Want different limits? <a href="/owner">Sign in to your account</a> to change them.</p>
   </div>`, { robots: false });
@@ -172,7 +176,7 @@ const ORDER_STATE = (o) => {
 const stateLine = (o) => { const [label, tone] = ORDER_STATE(o); return `<span class="status-line${tone ? ` status-line--${tone}` : ''}"><i aria-hidden="true"></i>${esc(label)}</span>`; };
 const itemsText = (lines, n = 3) => lines.slice(0, n).map((l) => (l.quantity > 1 ? `${l.name} × ${l.quantity}` : l.name)).join(', ') + (lines.length > n ? `, +${lines.length - n} more` : '');
 const CASE = { open: ['Open', 'warn'], resend_sent: ['Replacement sent', 'go'], refunded: ['Refunded', 'go'], closed: ['Closed', ''] };
-const KIND = { never_arrived: 'Never arrived', damaged: 'Arrived damaged', wrong_item: 'Wrong item', missing_item: 'Missing item', charged_wrong: 'Charged wrong', other: 'Other problem' };
+const KIND = { never_arrived: 'Never arrived', damaged: 'Arrived damaged', wrong_item: 'Wrong item', missing_item: 'Missing item', charged_wrong: 'Charged wrong', return: 'Sending back', other: 'Other problem' };
 
 /** The owner's page: what needs them, what's coming, then settings. */
 export function ownerPage({ account, approvals, addresses, paymentMethods, grants, orders, cases, subscriptions = [], testMode, flash, developerKey }) {
@@ -196,9 +200,9 @@ export function ownerPage({ account, approvals, addresses, paymentMethods, grant
     <section class="signage" aria-label="At a glance">
       ${sign(`Spent in ${month}`, usd(account.spend.spent_cents), meter({ label: 'Monthly budget', spentCents: account.spend.spent_cents, limitCents: account.policy.monthly_limit_cents }))}
       ${next ? sign('Next delivery', day(next.next_order_date), `<p>${esc(itemsText(next.items, 2))}<br><span class="muted">About ${usd(next.estimated_next_order.total_cents)}${next.status === 'paused' ? ', after the pause' : ''}</span></p>`)
-    : sign('Next delivery', 'None', '<p class="muted">Ask your assistant to set up regular deliveries.</p>', true)}
+    : sign('Next delivery', 'None yet', '<p class="muted">Ask your assistant to set up regular deliveries.</p>', true)}
       ${grants.length ? sign(grants.length > 1 ? 'Assistants' : 'Assistant', grants.length > 1 ? `${grants.length} connected` : grants[0].client_name, `<p class="muted">Shops within your limits. It can't approve its own orders.</p>`)
-    : sign('Assistant', 'None', '<p class="muted">Use "Connect Domaru" in your assistant.</p>', true)}
+    : sign('Assistant', 'Not connected', '<p class="muted">Use "Connect Domaru" in your assistant.</p>', true)}
     </section>
 
     ${approvals.length ? `<h2 class="section">Waiting for you</h2><div class="cards">${approvals.map((a) => approvalCard({ ...a, spend: account.spend, policy: account.policy },
