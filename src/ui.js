@@ -188,6 +188,15 @@ mark.blank { background: var(--warn-bg); color: var(--ink); padding: 0 0.25rem; 
 .status-line i { width: 8px; height: 8px; border-radius: 50%; background: var(--muted); flex: none; }
 .status-line--go i { background: var(--go); } .status-line--warn i { background: var(--tag); outline: 1px solid var(--ink); } .status-line--stop i { background: var(--stop); }
 .table-scroll { overflow-x: auto; }
+@media (max-width: 559px) {
+  .orders thead { display: none; }
+  .orders tr { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 0.125rem var(--s3); padding: var(--s3) 0; border-bottom: 1px solid var(--rule); }
+  .orders td, .orders td + td, .orders .num { border: 0; padding: 0; }
+  .orders td:nth-child(1) { grid-area: 1 / 1; font-size: 0.8125rem; color: var(--muted); }
+  .orders td:nth-child(2) { grid-area: 2 / 1 / 3 / 3; }
+  .orders td:nth-child(3) { grid-area: 3 / 1 / 4 / 3; }
+  .orders td.num { grid-area: 1 / 2 / 2 / 3; }
+}
 
 /* message pages */
 .eyebrow { display: inline-flex; align-items: center; gap: 0.625rem; font: 600 0.75rem/1 var(--body); letter-spacing: 0.08em; text-transform: uppercase; color: var(--muted); }

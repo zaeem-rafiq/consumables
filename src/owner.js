@@ -151,7 +151,7 @@ export function approvalPage({ info, token }) {
   const actions = decideButtons(() => `/owner/approvals/${esc(approval.id)}/decide`, (decision) => hidden({ t: token, decision }), approval.amount_cents);
   return layout(pending ? 'Approve this order?' : 'Order request', `<div class="stack">
     <h1 class="title">${pending ? 'Approve this order?' : 'Order request'}</h1>
-    <p class="lede">${pending ? `${esc(account)}'s assistant wants to order these supplies. They are outside the limits you set, so they wait for you.` : `A request from ${esc(account)}'s assistant.`}</p>
+    <p class="lede">${pending ? 'Your assistant wants to order these supplies. They are outside the limits you set, so they wait for you.' : 'A request from your assistant.'}</p>
     ${approvalCard(info, actions)}
     <p class="small muted">Want different limits? <a href="/owner">Sign in to your account</a> to change them.</p>
   </div>`, { robots: false });
@@ -212,7 +212,7 @@ export function ownerPage({ account, approvals, addresses, paymentMethods, grant
     : '<p class="muted">No regular deliveries yet. Your assistant sets these up.</p>'}
 
     <h2 class="section">Recent orders</h2>
-    ${orders.length ? `<div class="panel table-scroll"><table class="lines"><thead><tr><th>Date</th><th>Items</th><th>Status</th><th class="num">Total</th></tr></thead><tbody>
+    ${orders.length ? `<div class="panel table-scroll"><table class="lines orders"><thead><tr><th>Date</th><th>Items</th><th>Status</th><th class="num">Total</th></tr></thead><tbody>
       ${orders.map((o) => `<tr><td>${esc(day(o.created_at))}</td><td>${esc(itemsText(o.lines, 2))}</td><td>${stateLine(o)}</td><td class="num">${usd(o.amounts.total_cents)}${o.refunded_cents && o.status !== 'refunded' ? `<span class="sub">${usd(o.refunded_cents)} refunded</span>` : ''}</td></tr>`).join('')}
     </tbody></table></div>` : '<p class="muted">No orders yet.</p>'}
 

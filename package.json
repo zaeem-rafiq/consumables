@@ -6,7 +6,10 @@
   "scripts": {
     "start": "node --no-warnings bin/server.js",
     "mcp": "node --no-warnings bin/mcp-stdio.js",
-    "test": "node --no-warnings --test \"test/*.test.js\""
+    "test": "node --no-warnings --test \"test/*.test.js\"",
+    "rehearsal": "node --no-warnings scripts/rehearsal.js",
+    "screens": "node --no-warnings scripts/screens.js",
+    "evals": "node --no-warnings evals/run.js"
   },
   "license": "UNLICENSED",
   "dependencies": {
