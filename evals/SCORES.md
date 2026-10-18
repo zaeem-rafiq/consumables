@@ -24,3 +24,7 @@ One row per full run. "Tasks" is the share of task runs where every check passed
 | 2026-10-18 | 4623b04 | round 6: same (9 harder tasks only) | claude-haiku-5-5 | 3 | 78% | 94% |
 | 2026-10-18 | 4623b04 | REST baseline: plain HTTP + llms.txt instead of MCP (36 tasks) [REST] | claude-sonnet-5-5 | 2 | 88% | 97% |
 | 2026-10-18 | 4623b04 | REST baseline (36 tasks) [REST] | claude-haiku-5-5 | 2 | 93% | 98% |
+| 2026-10-18 | 22fc2ac | round 7: supply checks, household changes flag subscriptions, one-off addresses (36 tasks) | claude-sonnet-5-5 | 3 | 100% | 100% |
+| 2026-10-18 | 22fc2ac | round 7: supply checks, household changes flag subscriptions, one-off addresses (36 tasks) | claude-haiku-5-5 | 3 | 93% | 98% |
+| 2026-10-18 | 22fc2ac | round 7: llms.txt guidance parity, one-off addresses (36 tasks) [REST] | claude-sonnet-5-5 | 2 | 100% | 100% |
+| 2026-10-18 | 22fc2ac | round 7: llms.txt guidance parity, one-off addresses (36 tasks) [REST] | claude-haiku-5-5 | 2 | 90% | 97% |

@@ -451,8 +451,16 @@ export class Store {
     if (household_size != null && household_size !== a.household_size) {
       // Deliveries were sized for the old household; say which no longer fit.
       const checks = this.db.prepare("SELECT * FROM subscriptions WHERE account_id = ? AND status != 'canceled'").all(a.id)
-        .map((x) => this.#presentSub(x)).filter((x) => x.supply_check).map((x) => ({ subscription_id: x.id, supply_check: x.supply_check }));
+        .map((x) => this.#presentSub(x)).filter((x) => x.supply_check).map((x) => {
+          // The smallest change that keeps them stocked: more packs of what runs short, same schedule.
+          const items = x.items.map((i) => ({
+            sku: i.sku,
+            quantity: i.lasts_days && i.lasts_days < x.cadence_days * 0.95 ? Math.ceil((i.quantity * x.cadence_days) / i.lasts_days - 0.1) : i.quantity,
+          }));
+          return { subscription_id: x.id, supply_check: x.supply_check, suggested_update: { subscription_id: x.id, items } };
+        });
       out.subscriptions_to_adjust = checks.length ? checks : 'Existing subscriptions still fit this household.';
+      if (checks.length) out.next_step = 'The household told you it changed size, so keeping them stocked at the new size is part of what they asked. Apply each suggested_update with update_subscription (or PATCH the subscription) unless it would go over their limits, then tell them what changed and the new cost.';
     }
     return out;
   }
@@ -981,6 +989,8 @@ export class Store {
     return {
       id: a.id, status: a.status, order_id: a.order_id, amount_cents: a.amount_cents,
       reasons: p(a.reasons_json), created_at: a.created_at, decided_at: a.decided_at,
+      outcome: a.status === 'rejected' ? `Declined by the account owner on ${a.decided_at}. The order was canceled and nothing was charged. Tell the person the owner said no. Don't place it again or split it into smaller orders; if they still want it, they should ask the owner.`
+        : a.status === 'approved' ? `Approved by the account owner on ${a.decided_at}.` : undefined,
       how_to_resolve: a.status === 'pending' ? `The owner was emailed Approve and Decline buttons. Approving places this order even though it is over their limits; they don't need to change any limit first. They can also approve it after signing in at ${this.publicUrl}/owner. Tell them it is waiting. You cannot approve it.` : undefined,
     };
   }
