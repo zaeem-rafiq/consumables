@@ -200,9 +200,9 @@ export function ownerPage({ account, approvals, addresses, paymentMethods, grant
     <section class="signage" aria-label="At a glance">
       ${sign(`Spent in ${month}`, usd(account.spend.spent_cents), meter({ label: 'Monthly budget', spentCents: account.spend.spent_cents, limitCents: account.policy.monthly_limit_cents }))}
       ${next ? sign('Next delivery', day(next.next_order_date), `<p>${esc(itemsText(next.items, 2))}<br><span class="muted">About ${usd(next.estimated_next_order.total_cents)}${next.status === 'paused' ? ', after the pause' : ''}</span></p>`)
-    : sign('Next delivery', 'None', '<p class="muted">Ask your assistant to set up regular deliveries.</p>', true)}
+    : sign('Next delivery', 'None yet', '<p class="muted">Ask your assistant to set up regular deliveries.</p>', true)}
       ${grants.length ? sign(grants.length > 1 ? 'Assistants' : 'Assistant', grants.length > 1 ? `${grants.length} connected` : grants[0].client_name, `<p class="muted">Shops within your limits. It can't approve its own orders.</p>`)
-    : sign('Assistant', 'None', '<p class="muted">Use "Connect Domaru" in your assistant.</p>', true)}
+    : sign('Assistant', 'Not connected', '<p class="muted">Use "Connect Domaru" in your assistant.</p>', true)}
     </section>
 
     ${approvals.length ? `<h2 class="section">Waiting for you</h2><div class="cards">${approvals.map((a) => approvalCard({ ...a, spend: account.spend, policy: account.policy },

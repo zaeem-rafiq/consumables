@@ -196,6 +196,7 @@ a { color: inherit; }
 .tabs button { font: 600 0.9375rem/1 var(--body); color: var(--band-muted); background: none; border: 0; border-bottom: 3px solid transparent; padding: 0.875rem 1.125rem; min-height: 44px; white-space: nowrap; cursor: pointer; }
 .tabs button[aria-selected="true"] { color: var(--band-ink); border-bottom-color: var(--tag); }
 .tabs button:hover { color: var(--band-ink); }
+@media (max-width: 559px) { .tabs { overflow: visible; flex-wrap: wrap; } .tabs button { padding: 0.75rem 0.625rem; font-size: 0.875rem; flex: 1 1 auto; } }
 .code { background: var(--code); padding: 1.375rem 1.5rem; display: grid; gap: 0.625rem; }
 .code__row { display: flex; justify-content: space-between; gap: var(--s4); align-items: flex-start; }
 .code pre { margin: 0; font: 400 0.9375rem/1.6 var(--mono); color: var(--band-ink); white-space: pre-wrap; overflow-wrap: anywhere; min-width: 0; }
