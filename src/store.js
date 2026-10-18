@@ -2,6 +2,7 @@
 // behavior (pricing, spend policy, billing, fulfillment) is identical across
 // surfaces.
 
+import { renderEmail } from './email-html.js';
 import { createHash, randomBytes, timingSafeEqual } from 'node:crypto';
 import { openDb } from './db.js';
 import { PRODUCTS, CATEGORIES, presentProduct, baseUnitsPerPack, monthlyUsage } from './catalog.js';
@@ -1684,7 +1685,7 @@ export class Store {
         for (const e of this.db.prepare("SELECT * FROM emails WHERE status = 'queued' ORDER BY rowid").all()) {
           let r;
           try {
-            r = await this.mailer.send({ id: e.id, from: this.support.from, replyTo: this.support.email, to: e.to_addr, subject: e.subject, text: e.body });
+            r = await this.mailer.send({ id: e.id, from: this.support.from, replyTo: this.support.email, to: e.to_addr, subject: e.subject, text: e.body, html: renderEmail(e) });
           } catch (err) {
             r = { status: 'failed', error: err.message };
           }

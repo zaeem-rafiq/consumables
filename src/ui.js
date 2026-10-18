@@ -148,6 +148,7 @@ mark.blank { background: var(--warn-bg); color: var(--ink); padding: 0 0.25rem; 
 .why { list-style: none; margin: 0; padding: 0; display: grid; gap: 0.375rem; }
 .why li { display: grid; grid-template-columns: 10px minmax(0, 1fr); gap: 0.625rem; align-items: baseline; color: var(--ink-2); font-size: 0.9375rem; }
 .why li::before { content: ""; width: 10px; height: 10px; background: var(--stop); transform: translateY(1px); }
+.mail { display: block; width: 100%; height: 720px; border: 1px solid var(--rule); border-radius: var(--radius); margin: var(--s3) 0 var(--s2); background: #f6f6f3; }
 .owner__actions { display: grid; grid-template-columns: 1fr; gap: var(--s2); }
 @media (min-width: 420px) { .owner__actions { grid-template-columns: 1fr 1fr; } }
 .owner__actions .btn { height: 100%; white-space: nowrap; }

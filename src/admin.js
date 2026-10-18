@@ -4,6 +4,7 @@
 // refunds, Walmart cancellations and chargebacks are handled from here too.
 // Sign-in is a password form that sets a cookie; nothing secret goes in a URL.
 
+import { renderEmail } from './email-html.js';
 import { layout, esc, usd } from './ui.js';
 
 const addressText = (a) => [a.name, a.line1, a.line2, `${a.city}, ${a.region} ${a.postal_code}`, a.phone].filter(Boolean).join('\n');
@@ -134,6 +135,6 @@ export function emailLogPage(emails) {
     <p><a href="/admin">← All orders</a></p>
     <h1 class="title">Email log</h1>
     <p class="muted">Every email the store sent or queued, newest first. Without an email provider configured they are only recorded here.</p>
-    ${emails.map((e) => `<details class="panel"><summary><strong>${esc(e.subject)}</strong> <span class="small muted">to ${esc(e.to)} · ${esc(e.created_at.slice(0, 16).replace('T', ' '))} · ${esc(e.status)}</span></summary><pre style="white-space:pre-wrap;font:inherit;margin:1rem 0 0">${esc(e.body)}</pre></details>`).join('') || '<p class="muted">No email yet.</p>'}
+    ${emails.map((e) => `<details class="panel"><summary><strong>${esc(e.subject)}</strong> <span class="small muted">to ${esc(e.to)} · ${esc(e.created_at.slice(0, 16).replace('T', ' '))} · ${esc(e.status)}</span></summary><iframe class="mail" sandbox="" title="${esc(e.subject)}" srcdoc="${esc(renderEmail(e))}"></iframe><details class="small"><summary>Plain-text version</summary><pre style="white-space:pre-wrap;font:inherit;margin:1rem 0 0">${esc(e.body)}</pre></details></details>`).join('') || '<p class="muted">No email yet.</p>'}
   </div>`, { wide: true, right: signOut, robots: false });
 }

@@ -23,11 +23,11 @@ export class ResendMailer {
     this.apiBase = apiBase;
   }
 
-  async send({ id, from, to, replyTo, subject, text }) {
+  async send({ id, from, to, replyTo, subject, text, html }) {
     const res = await this.fetch(`${this.apiBase}/emails`, {
       method: 'POST',
       headers: { authorization: `Bearer ${this.apiKey}`, 'content-type': 'application/json', 'idempotency-key': id },
-      body: JSON.stringify({ from, to: [to], reply_to: replyTo, subject, text }),
+      body: JSON.stringify({ from, to: [to], reply_to: replyTo, subject, text, ...(html ? { html } : {}) }),
     });
     const json = await res.json().catch(() => ({}));
     if (!res.ok) return { status: 'failed', ref: null, error: json.message ?? `Resend error ${res.status}` };
