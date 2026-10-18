@@ -12,6 +12,7 @@ const subs = (store, ctx, status) => store.listSubscriptions(ctx.agent, status ?
 const orders = (store, ctx) => store.listOrders(ctx.agent, { limit: 200 });
 const skus = (items) => items.map((i) => i.sku).sort();
 const called = (t, name) => t.calls.filter((c) => c.name === name);
+const usd = (c) => `$${(c / 100).toFixed(2)}`;
 const check = (name, pass, detail) => ({ name, pass: !!pass, ...(detail ? { detail } : {}) });
 const charged = (o) => ['paid', 'payment_pending'].includes(o.status);
 // A yes/no question about the reply. With { no: true }, "NO" is the passing answer.
@@ -35,6 +36,19 @@ async function delivered(store, items) {
 // Vacation window: away from AWAY to BACK; the next box is due in the middle.
 const AWAY = addDays(TODAY, 14); const BACK = addDays(TODAY, 31); const DUE = addDays(TODAY, 16);
 const MONDAY = nextMonday(TODAY);
+
+
+// ---- harder tasks (round 2): several steps, and a wrong default is easy to fall into.
+const MOVE = addDays(TODAY, 10);
+const EVERYTHING = [...PAPER, ...CLEANING, { sku: 'DISH-LIQ-90', quantity: 1 }, { sku: 'TRASH-13G-90', quantity: 1 }];
+const addrOf = (store, addrId) => JSON.parse(store.db.prepare('SELECT json FROM addresses WHERE id = ?').get(addrId)?.json ?? '{}');
+const allOrders = (store, ctx) => store.db.prepare('SELECT * FROM orders WHERE account_id = ?').all(ctx.agent.accountId);
+const linesOf = (o) => JSON.parse(o.lines_json).map((l) => l.sku);
+/** Days one pack lasts this household, per sku. */
+function packDays(store, ctx, skuList, people) {
+  const rec = store.recommend(ctx.agent, { household_size: people, skus: skuList });
+  return Object.fromEntries(rec.plan.flatMap((d) => d.items.map((i) => [i.sku, i.days_of_supply / i.quantity])));
+}
 
 export const TASKS = [
   {
@@ -408,6 +422,132 @@ export const TASKS = [
         check('refunded in full', refunded === o.amounts.total_cents, `${refunded} of ${o.amounts.total_cents}`),
         check('paper subscription untouched', store.getSubscription(ctx.agent, ctx.paper.id).status === 'active'),
         await ask(judge, t, 'confirms the refund', 'Does the reply confirm the order was canceled and that the money is refunded?'),
+      ];
+    },
+  },
+  {
+    id: 'gift-address',
+    title: 'Send a one-off order to someone else without changing where everything else goes',
+    prompt: 'Please send one pack of paper towels to my mom: Linda Rafiq, 4 Elm St, Fayetteville, AR 72701. Just this once, everything else stays as it is.',
+    async setup(store) {
+      const c = await seedAccount(store);
+      await store.createSubscription(c.agent, { items: PAPER, cadence_days: 28, start_date: addDays(TODAY, 9) });
+      c.home = store.getAccount(c.agent.accountId).default_address_id;
+      return c;
+    },
+    async grade({ store, ctx, transcript: t, judge }) {
+      const toMom = allOrders(store, ctx).filter((o) => /Elm/i.test(addrOf(store, o.address_id).line1 ?? ''));
+      const sub = subs(store, ctx)[0];
+      return [
+        check('one order of paper towels to Mom', toMom.length === 1 && linesOf(toMom[0]).includes('PT-2PLY-12') && !toMom[0].subscription_id, `${toMom.length} orders`),
+        check('home is still the default address', store.getAccount(ctx.agent.accountId).default_address_id === ctx.home),
+        check('subscription still goes home', sub?.address_id === ctx.home && sub.status === 'active'),
+        await ask(judge, t, 'says it waits for the owner', "Does the reply say the order to the new address is waiting for the account owner's approval (for example by email) before it ships?"),
+      ];
+    },
+  },
+  {
+    id: 'moving',
+    title: 'Point deliveries at a new home from the moving day on',
+    prompt: `We're moving on ${human(MOVE)} to 88 Pine Ave, Rogers, AR 72756 (same names on the door). Make sure our deliveries go to the new place from then on.`,
+    async setup(store) {
+      const c = await seedAccount(store);
+      await store.createSubscription(c.agent, { items: PAPER, cadence_days: 28, start_date: addDays(TODAY, 12) });
+      return c;
+    },
+    async grade({ store, ctx, transcript: t, judge }) {
+      const pine = store.listAddresses(ctx.agent).find((a) => /88 Pine/i.test(a.line1));
+      const sub = subs(store, ctx).find((s) => s.status !== 'canceled');
+      const early = allOrders(store, ctx).filter((o) => pine && o.address_id === pine.id && o.created_at.slice(0, 10) < MOVE);
+      return [
+        check('new address on file', !!pine && /Rogers/i.test(pine.city) && pine.postal_code === '72756'),
+        check('subscription ships to the new address', !!pine && sub?.address_id === pine.id),
+        check('subscription kept (not canceled and recreated)', subs(store, ctx).length === 1 && sub?.status === 'active'),
+        check('nothing sent to the new place before moving day', early.length === 0),
+        await ask(judge, t, 'mentions the owner OK for the new address', "Does the reply say the first delivery to the new address will need the account owner's approval (an email to Approve), or otherwise that the owner must OK the new address?"),
+      ];
+    },
+  },
+  {
+    id: 'already-coming',
+    title: "Notice the item is already on its way instead of ordering it twice",
+    prompt: "We're almost out of paper towels, can you get us some?",
+    async setup(store) {
+      const c = await seedAccount(store);
+      await store.createSubscription(c.agent, { items: PAPER, cadence_days: 28, start_date: TODAY });
+      return c;
+    },
+    async grade({ store, ctx, transcript: t, judge }) {
+      const extra = allOrders(store, ctx).filter((o) => linesOf(o).includes('PT-2PLY-12')).length - 1;
+      return [
+        check('did not buy paper towels twice', extra === 0, `${extra} extra`),
+        await ask(judge, t, 'says some are already on the way', 'Does the reply tell them paper towels are already on the way (from their regular delivery) and roughly when they arrive?'),
+      ];
+    },
+  },
+  {
+    id: 'budget-cut',
+    title: 'Cut monthly spending without running out of anything',
+    prompt: "We're spending too much on household supplies. Get it under $90 a month, but we can't run out of anything we use now.",
+    async setup(store) {
+      const c = await seedAccount(store);
+      await store.createSubscription(c.agent, { items: PAPER, cadence_days: 28, start_date: addDays(TODAY, 5) });
+      await store.createSubscription(c.agent, { items: EVERYTHING.slice(2), cadence_days: 28, start_date: addDays(TODAY, 5) });
+      return c;
+    },
+    async grade({ store, ctx, transcript: t, judge }) {
+      const active = subs(store, ctx).filter((s) => s.status === 'active');
+      const monthly = active.reduce((n, s) => n + s.estimated_monthly_cents, 0);
+      const days = packDays(store, ctx, EVERYTHING.map((i) => i.sku), 3);
+      // Supply per day of each sku across active subscriptions vs. what three people use.
+      const short = EVERYTHING.map((i) => i.sku).filter((sku) => {
+        const perDay = active.reduce((n, s) => n + s.items.filter((x) => x.sku === sku).reduce((m, x) => m + (x.quantity * days[sku]) / s.cadence_days, 0), 0);
+        return perDay < 0.9;
+      });
+      return [
+        check('under $90 a month', monthly < 9000, usd(monthly)),
+        check('still gets every item, fast enough', short.length === 0, short.join(',')),
+        await ask(judge, t, 'gives the new monthly cost', 'Does the reply give the new monthly cost in dollars?'),
+      ];
+    },
+  },
+  {
+    id: 'refund-status',
+    title: 'Answer whether a refund came through',
+    prompt: 'Did we ever get our money back for that leaky dish soap?',
+    async setup(store) {
+      const c = await delivered(store, [{ sku: 'DISH-LIQ-90', quantity: 2 }, { sku: 'TRASH-13G-90', quantity: 1 }]);
+      const kase = store.reportProblem(c.agent, c.order.id, { kind: 'damaged', skus: ['DISH-LIQ-90'], note: 'Leaked everywhere.' });
+      await store.resolveCase(kase.id, { action: 'refund' });
+      c.refund = store.getCase(c.agent, kase.id).refund_cents;
+      return c;
+    },
+    async grade({ store, ctx, transcript: t, judge }) {
+      return [
+        check('did not open another problem report', store.listCases(ctx.agent).length === 1),
+        check('says the amount', t.final.includes(usd(ctx.refund).slice(1)), usd(ctx.refund)),
+        await ask(judge, t, 'confirms the refund', 'Does the reply say yes, the money was refunded (to their card)?'),
+      ];
+    },
+  },
+  {
+    id: 'household-grows',
+    title: 'Adjust deliveries when someone moves in',
+    prompt: "My sister is moving in with us for good, so there are four of us now. Adjust things so we don't run short.",
+    async setup(store) {
+      const c = await seedAccount(store, { household_size: 3 });
+      await store.createSubscription(c.agent, { items: PAPER, cadence_days: 28, start_date: addDays(TODAY, 6) });
+      return c;
+    },
+    async grade({ store, ctx, transcript: t }) {
+      const active = subs(store, ctx).filter((s) => s.status === 'active');
+      const rate = (sku) => active.reduce((n, s) => n + s.items.filter((x) => x.sku === sku).reduce((m, x) => m + x.quantity / s.cadence_days, 0), 0);
+      const days = packDays(store, ctx, ['TP-2PLY-30', 'PT-2PLY-12'], 4);
+      const enough = ['TP-2PLY-30', 'PT-2PLY-12'].every((sku) => rate(sku) * days[sku] >= 0.9);
+      return [
+        check('household size is 4', store.getAccount(ctx.agent.accountId).household_size === 4),
+        check('more toilet paper per month', rate('TP-2PLY-30') >= (1 / 28) * 1.2, (rate('TP-2PLY-30') * 28).toFixed(2)),
+        check('enough of both for four people', enough),
       ];
     },
   },
