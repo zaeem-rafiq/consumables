@@ -6,7 +6,7 @@
 
 **Our promise:** if something goes wrong with an order, tell us and we'll make it right with a refund or a replacement. You deal with us, never with the retailer.
 
-To report a problem, email **support@domaru.app** with your order number, or ask your assistant to report it for you. [CODE: the "report a problem" action for assistants is not built yet.]
+To report a problem, email **support@domaru.app** with your order number, or ask your assistant to report it for you.
 
 ## How delivery works
 
@@ -15,7 +15,7 @@ We buy your items from major retailers, such as Walmart and Amazon, and have the
 ## Before your order is placed with the retailer
 
 - **Orders waiting for approval** are never charged. If the owner rejects one, or no one approves it, nothing is charged and nothing is sent.
-- **Canceling a paid order.** If you cancel before we've placed the order with the retailer, we refund it in full. [CODE: cancel-with-refund for paid orders is not built yet.]
+- **Canceling a paid order.** If you cancel before we've placed the order with the retailer, we refund it in full.
 - **Subscriptions** can be paused, skipped or canceled at any time before the next order date, and nothing is charged for orders that are skipped or canceled.
 
 ## If something goes wrong with a delivery

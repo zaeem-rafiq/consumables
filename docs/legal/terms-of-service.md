@@ -6,7 +6,7 @@
 
 These terms are an agreement between you and [COMPANY LEGAL NAME], a Delaware corporation ("**Domaru**", "**we**", "**us**"). They cover the Domaru store at domaru.app, its API and MCP server, and any order or subscription placed through them (together, the "**Service**").
 
-By creating an account, claiming an account your assistant created, adding a payment method, or placing an order, you agree to these terms, our [Privacy Policy](/privacy) and our [Refund and Delivery Policy](/refunds). If you don't agree, don't use the Service.
+By signing in, connecting an assistant, adding a payment method, or placing an order, you agree to these terms, our [Privacy Policy](/privacy) and our [Refund and Delivery Policy](/refunds). If you don't agree, don't use the Service.
 
 ## 1. What Domaru is
 
@@ -22,24 +22,24 @@ Domaru is a store for everyday household supplies (paper goods, cleaning, laundr
 - We deliver only to addresses in the United States [LAWYER: confirm whether to exclude any states, PO boxes, APO/FPO or US territories].
 - The Service is for personal and household use, and for businesses such as short-term rental hosts and small offices buying supplies for their own premises. You may not buy from Domaru to resell.
 
-## 3. Your account, your assistant, and your keys
+## 3. Your account and your assistant
 
-Each Domaru account has two kinds of access:
+**The owner.** The owner is the person who signs in to Domaru with their email address, using the sign-in link we email them. The email address you sign in with identifies the owner. The owner adds a payment method, accepts these terms and is responsible for the account.
 
-- **The owner.** The owner is the person who claims the account, adds a payment method and accepts these terms. The owner holds the **owner key** and is responsible for the account.
-- **The assistant (agent).** An AI assistant or app you connect uses an **agent key** to browse, quote, order and manage subscriptions on your behalf.
+**Your assistant.** You connect an AI assistant or app to Domaru by choosing "Connect Domaru" in it and signing in. Once connected, the assistant can browse, quote, order and manage subscriptions on your behalf.
 
 By connecting an assistant, you authorize it to act for you on Domaru **within the spending limits and approval rules the owner sets**. Specifically:
 
-1. **Orders inside your limits are authorized by you.** An order or subscription your assistant places with your agent key, and which is within your limits, is treated as an order you placed. You are responsible for paying for it.
+1. **Orders inside your limits are authorized by you.** An order or subscription your connected assistant places, and which is within your limits, is treated as an order you placed. You are responsible for paying for it.
 2. **Orders outside your limits wait for you.** Any order that exceeds a limit, or that your rules say needs approval, is held. It isn't charged unless the owner approves it. If no one approves it, it is not placed.
-3. **Only the owner can change limits or approve held orders.** The Service is built so that an agent key cannot approve its own orders, raise its own limits or change who the owner is.
-4. **Keep your keys secret.** Anyone who has your agent key can order within your limits, and anyone who has your owner key can change them. Tell us right away at support@domaru.app if a key is lost or misused, and rotate it. We aren't responsible for orders placed with a key you shared, lost or failed to protect before you told us.
-5. **Your assistant is not Domaru.** The assistant or app you connect is provided by someone else under their own terms and privacy policy. We don't control what it decides to order, what it tells you, or how it stores your information. If it orders something within your limits that you didn't want, see our Refund and Delivery Policy.
+3. **Only the owner can change limits or approve held orders.** A connected assistant cannot approve orders, change your limits or change who the owner is. Those actions require the owner to be signed in on domaru.app.
+4. **You can disconnect an assistant at any time** on domaru.app. Once disconnected, it can no longer see or place orders. Orders it placed before you disconnected it are not undone automatically; see our Refund and Delivery Policy.
+5. **Keep your email account secure.** Anyone who can read the email account you sign in with can sign in to Domaru as the owner. Tell us right away at support@domaru.app if you think someone else has signed in or connected an assistant without your permission. We aren't responsible for orders placed before you told us through access you allowed or failed to protect.
+6. **Your assistant is not Domaru.** The assistant or app you connect is provided by someone else under their own terms and privacy policy. We don't control what it decides to order, what it tells you, or how it stores your information. If it orders something within your limits that you didn't want, see our Refund and Delivery Policy.
 
 You must give us accurate account, delivery and payment information and keep it up to date.
 
-**Test mode.** Accounts and keys marked "test" (for example keys starting with `ck_test_` or `ok_test_`) are a sandbox for developers. Nothing in test mode is charged or delivered, and test data may be deleted at any time.
+**Developer keys and test mode.** Developers building on Domaru may instead use API keys: an agent key, which works like a connected assistant, and an owner key, which works like the signed-in owner. Keep them secret; anyone who has them can act with their permissions, and the rules above apply to them the same way. Keys marked "test" (for example keys starting with `ck_test_` or `ok_test_`) are a sandbox. Nothing in test mode is charged or delivered, and test data may be deleted at any time.
 
 ## 4. Prices, quotes and taxes
 
@@ -53,7 +53,7 @@ You must give us accurate account, delivery and payment information and keep it 
 
 **A Domaru subscription renews automatically.** It places a new order and charges your payment method on each order date, at the cadence shown (for example every 28 days), **until you or your assistant pause, skip or cancel it.**
 
-- **What you'll see before you subscribe:** the items, the price of each order, how often it repeats, the date of the first charge, and how to cancel. [LAWYER: several states, including California, require this disclosure "clearly and conspicuously" and the customer's affirmative consent before the first charge. Because an assistant may create the subscription, we plan to capture the owner's consent when the owner claims the account and adds a payment method. Please confirm this is sufficient, or whether the owner must confirm each new subscription.]
+- **What you'll see before you subscribe:** the items, the price of each order, how often it repeats, the date of the first charge, and how to cancel. [LAWYER: several states, including California, require this disclosure "clearly and conspicuously" and the customer's affirmative consent before the first charge. Because an assistant may create the subscription, we plan to capture the owner's consent when the owner signs in and adds a payment method. Please confirm this is sufficient, or whether the owner must confirm each new subscription.]
 - **Confirmation.** After a subscription starts, we send the owner a confirmation with the details above and how to cancel. [CODE: owner emails are not built yet.]
 - **Cancel any time.** You or your assistant can cancel, pause or skip a subscription at any time through the Service, or by emailing support@domaru.app. Cancellation takes effect immediately and stops future orders. An order that has already been charged and placed with the retailer isn't affected; see the Refund and Delivery Policy for that order.
 - **Price changes.** If the price of a subscription item goes up, we'll tell the owner at least [7] days before the next order at the new price. If the new total exceeds the owner's limits, that order will be held for approval instead of charged.
@@ -78,7 +78,7 @@ You must give us accurate account, delivery and payment information and keep it 
 
 If you or your assistant use the Domaru API or MCP server, you agree not to:
 
-- access accounts or keys that aren't yours, or try to get around spending limits, approvals or rate limits;
+- access accounts, sign-ins or keys that aren't yours, or try to get around spending limits, approvals or rate limits;
 - interfere with or overload the Service, or probe it for vulnerabilities except under a written agreement with us [or our security policy];
 - use the Service to place fraudulent orders, test stolen payment methods, or buy for resale;
 - copy the catalog or Service to build a competing product by scraping.
@@ -91,7 +91,7 @@ If you build an assistant or app that connects people to Domaru, you are respons
 
 You can close your account at any time by emailing support@domaru.app or through the Service. Closing cancels all subscriptions.
 
-We may suspend or close an account, cancel pending orders, or refuse an order if we reasonably believe there is fraud, a disputed or failed payment, misuse of keys, abuse of our refund policy, a breach of these terms, or if a retailer can't fill the order. If we cancel an order you've paid for, we'll refund it.
+We may suspend or close an account, cancel pending orders, or refuse an order if we reasonably believe there is fraud, a disputed or failed payment, misuse of sign-ins or keys, abuse of our refund policy, a breach of these terms, or if a retailer can't fill the order. If we cancel an order you've paid for, we'll refund it.
 
 ## 10. Changes to the Service and these terms
 

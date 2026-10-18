@@ -12,7 +12,8 @@ This policy explains what information [COMPANY LEGAL NAME] ("**Domaru**", "**we*
 
 **Information you or your assistant give us**
 
-- **Account details:** name, email address, household size, and the name of the account.
+- **Account details:** name, email address (which you also use to sign in), household size, and the name of the account.
+- **Connected assistants:** which assistants or apps you've connected, when, and what they did on your account.
 - **Delivery details:** the name, street address, and phone number for each delivery address.
 - **Your rules:** spending limits, approval rules, substitution preferences and subscription settings.
 - **Orders and subscriptions:** what was ordered, when, how often, prices, approvals and cancellations.
@@ -38,7 +39,7 @@ We don't receive your conversations with your assistant. We only receive the req
 
 ## 2. How we use it
 
-- To create and secure your account, including checking keys and enforcing your limits and approvals.
+- To create and secure your account, including emailing sign-in links, checking which assistants you've connected, and enforcing your limits and approvals.
 - To quote, charge, place and deliver orders and subscriptions.
 - To tell you about your account: approvals needed, shipping, problems, refunds, failed payments, and changes to prices or these policies.
 - To recommend how much to order and how often, based on your household size and order history, and to flag when you may be running low.
@@ -58,7 +59,7 @@ We share information only as needed to run the Service:
 | **Retailers that deliver your order** (currently Walmart, and Amazon as a backup) | The recipient's name, delivery address, phone number and the items ordered | So they can deliver to you. Their own privacy policies apply to what they do with it. |
 | **Stripe** | Payment details you enter on Stripe's page, the amounts charged, and your name, email and address for fraud checks and tax | To process payments and calculate sales tax |
 | **Service providers** who host our servers, send our emails and store our data | Whatever is needed to provide their service | They act for us and may use the information only to provide the service to us |
-| **The assistant or app you connected** | The information it asks for using your agent key, such as order status, subscription details and your saved addresses | You chose to connect it. What it does with that information is governed by its own privacy policy. |
+| **The assistant or app you connected** | The information it asks for while connected, such as order status, subscription details and your saved addresses | You chose to connect it. What it does with that information is governed by its own privacy policy. |
 | **Authorities or others, when required** | What the law requires | To comply with law, respond to valid legal requests, or protect the safety, rights or property of our customers or Domaru |
 | **A buyer or successor** | Account and order information | If Domaru is merged, acquired or sells its assets. We'll notify you, and this policy will continue to apply to your information. |
 
@@ -73,9 +74,9 @@ We share information only as needed to run the Service:
 
 ## 5. How we protect it
 
-We store agent and owner keys only in hashed form, so we can't read them back. Connections to the Service are encrypted. Card and bank details stay with Stripe. Access to customer information is limited to the people who need it to run the Service. No system is perfectly secure, and if a breach affects your information, we'll notify you as the law requires.
+Sign-in links expire and work only once. We store the credentials that connected assistants and developer keys use only in hashed form, so we can't read them back. [CODE: confirm both for the new sign-in.] Connections to the Service are encrypted. Card and bank details stay with Stripe. Access to customer information is limited to the people who need it to run the Service. No system is perfectly secure, and if a breach affects your information, we'll notify you as the law requires.
 
-Keep your keys secret. Anyone with your agent key can see your orders and addresses and order within your limits.
+Keep the email account you sign in with secure, and disconnect any assistant you no longer use on domaru.app. A connected assistant can see your orders and addresses and order within your limits.
 
 ## 6. Your choices and rights
 
