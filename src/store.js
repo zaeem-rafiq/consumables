@@ -148,6 +148,11 @@ export class Store {
       throw badRequest('invalid_param', 'household_size must be an integer from 1 to 20.', { param: 'household_size' });
     }
     if (start_date != null && (this.mode === 'live' || !isDate(start_date))) throw badRequest('invalid_param', 'start_date must be YYYY-MM-DD, and is only allowed in test mode.', { param: 'start_date' });
+    // Signing in opens the newest household for an email, so a second live
+    // account under someone's email would hide their real one behind it.
+    if (this.mode === 'live' && this.db.prepare('SELECT 1 FROM accounts WHERE lower(email) = ? LIMIT 1').get(email.toLowerCase())) {
+      throw conflict('owner_has_account', 'That email already has a Domaru household.', { hint: 'Ask the owner to connect you with Connect Domaru from your assistant; they approve it on their Domaru page.' });
+    }
     const accountId = id('acct');
     const apiKey = `ck_${this.mode}_${randomBytes(18).toString('base64url')}`;
     // Placeholder until the owner claims the account; nobody holds a key that matches it.
@@ -178,6 +183,10 @@ export class Store {
   /** Re-send the owner's sign-in link to the email on file. */
   resendOwnerInvite(auth) {
     const a = this.#account(auth.accountId);
+    const since = new Date(Date.parse(a.clock) - 10 * 60_000).toISOString();
+    if (this.db.prepare("SELECT 1 FROM emails WHERE account_id = ? AND kind = 'owner_invite' AND created_at >= ? LIMIT 1").get(a.id, since)) {
+      throw new ApiError(429, 'invite_recently_sent', 'An invite went to the owner in the last 10 minutes.', { hint: 'Ask the owner to check their inbox and spam folder for the newest Domaru email.' });
+    }
     this.#sendOwnerInvite(a);
     return { sent_to: a.email, next_step: 'Ask the owner to open the newest Domaru email.' };
   }

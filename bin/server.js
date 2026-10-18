@@ -13,6 +13,7 @@
 //   SUPPORT_EMAIL               support inbox shown to customers and agents (default support@domaru.app)
 //   REFUND_NO_QUESTIONS_CENTS   refund or resend without proof up to this much per problem (default 4000)
 //   CLAIM_LIMIT, CLAIM_WINDOW_DAYS  proof needed after this many claims in this many days (default 2 in 90)
+//   TRUST_PROXY                 auto (default: trust X-Forwarded-For from a private-network proxy), cloudflare, or none
 import { Store } from '../src/store.js';
 import { startServer } from '../src/http.js';
 import { StripePayments } from '../src/payments.js';
@@ -29,6 +30,11 @@ if (mode === 'live' && (fulfillment !== 'manual' || !env.ADMIN_KEY)) {
   throw new Error('Live mode needs FULFILLMENT=manual and ADMIN_KEY so real orders reach a person.');
 }
 
+// Live owners sign in and approve orders by email, and chargebacks arrive by webhook.
+if (mode === 'live' && (!env.RESEND_API_KEY || !env.STRIPE_WEBHOOK_SECRET)) {
+  throw new Error('Live mode needs RESEND_API_KEY (owner sign-in and approval emails) and STRIPE_WEBHOOK_SECRET (disputes, card setups).');
+}
+if (env.TRUST_PROXY && !['auto', 'cloudflare', 'none'].includes(env.TRUST_PROXY)) throw new Error('TRUST_PROXY must be auto, cloudflare or none.');
 if (env.ADMIN_KEY && env.ADMIN_KEY.length < 24) throw new Error('ADMIN_KEY must be at least 24 characters.');
 const num = (v) => (v == null || v === '' ? undefined : Number(v));
 const support = Object.fromEntries(Object.entries({
@@ -38,7 +44,7 @@ const support = Object.fromEntries(Object.entries({
 const mailer = env.RESEND_API_KEY ? new ResendMailer({ apiKey: env.RESEND_API_KEY }) : undefined;
 const port = Number(env.PORT ?? 8787);
 const store = new Store({ dbPath: env.DOMARU_DB ?? 'domaru.db', payments, fulfillment, mode, mailer, support, publicUrl: env.PUBLIC_URL ?? `http://localhost:${port}` });
-const server = await startServer(store, { port, baseUrl: env.PUBLIC_URL, adminKey: env.ADMIN_KEY, stripeWebhookSecret: env.STRIPE_WEBHOOK_SECRET });
+const server = await startServer(store, { port, baseUrl: env.PUBLIC_URL, adminKey: env.ADMIN_KEY, stripeWebhookSecret: env.STRIPE_WEBHOOK_SECRET, trustProxy: env.TRUST_PROXY });
 console.log(`Domaru API on http://localhost:${server.address().port}  (${mode} mode, payments: ${store.payments.name}, fulfillment: ${fulfillment})`);
 
 // Deliver any email queued outside a request (scheduler runs, webhooks).

@@ -57,8 +57,9 @@ Not done yet: Stripe's shared payment token handler (needs a Stripe network prof
 | `STRIPE_SECRET_KEY` | Turns on real Stripe payments |
 | `FULFILLMENT` | `mock` or `manual` |
 | `ADMIN_KEY` | Turns on the `/admin` operator page. At least 24 characters. |
-| `STRIPE_WEBHOOK_SECRET` | Verifies `/webhooks/stripe` (setup completion, bank debits clearing, disputes) |
-| `RESEND_API_KEY`, `EMAIL_FROM` | Sends owner emails through Resend. Without it emails are only recorded (see `/admin/emails`). |
+| `STRIPE_WEBHOOK_SECRET` | Verifies `/webhooks/stripe` (setup completion, bank debits clearing, disputes). Required in live mode. |
+| `RESEND_API_KEY`, `EMAIL_FROM` | Sends owner emails through Resend. Without it emails are only recorded (see `/admin/emails`). Required in live mode. |
+| `TRUST_PROXY` | Where rate limits read the caller's address: `auto` (default; `X-Forwarded-For` from a proxy on a private network), `cloudflare` (`CF-Connecting-IP`; only when the origin accepts traffic from Cloudflare alone), or `none` |
 | `SUPPORT_EMAIL` | Shown on every page and email, and receives problem reports (default `support@domaru.app`) |
 | `REFUND_NO_QUESTIONS_CENTS`, `CLAIM_LIMIT`, `CLAIM_WINDOW_DAYS` | Problem-report rules (defaults $40, 2 claims, 90 days) |
 
