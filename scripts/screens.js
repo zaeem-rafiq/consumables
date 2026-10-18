@@ -15,7 +15,7 @@ const out = process.argv[2] ?? 'screens';
 mkdirSync(out, { recursive: true });
 
 const ADMIN_KEY = 'screens-admin-key';
-const store = new Store();
+const store = new Store({ fulfillment: 'manual' }); // orders wait in the operator's Walmart queue
 const server = await startServer(store, { port: 0, host: '127.0.0.1', adminKey: ADMIN_KEY });
 const base = `http://127.0.0.1:${server.address().port}`;
 store.publicUrl = base; // links in emails point at this server

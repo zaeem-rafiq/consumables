@@ -126,7 +126,7 @@ export function restCalls(calls) {
       const part = m[0];
       const url = /https?:\/\/[^\s'"]+/.exec(part)?.[0];
       if (!url) continue;
-      const path = new URL(url).pathname;
+      let path; try { path = new URL(url).pathname; } catch { continue; } // e.g. a shell variable in the URL
       const body = /(?:-d|--data(?:-raw)?)\s+(?:'([^']*)'|"((?:[^"\\]|\\.)*)")/.exec(part);
       const method = (/-X\s*(\w+)/.exec(part)?.[1] ?? (body ? 'POST' : 'GET')).toUpperCase();
       const tool = REST_TOOLS.find(([mm, re]) => mm === method && re.test(path))?.[2] ?? `${method} ${path}`;

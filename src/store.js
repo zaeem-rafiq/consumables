@@ -744,17 +744,20 @@ export class Store {
     });
     // One pack of some things (dish soap, toothpaste) lasts months. Sending those
     // on the main cadence piles them up, so they go on a slower second delivery.
-    // Slower deliveries come about when the first of their items runs out (whole
-    // weeks, at most 180 days), so nothing runs short. Anything that would still
-    // last more than 2.5 deliveries moves to one more, slower delivery.
-    const groups = [{ cadence_days, rows: usage.filter((u) => u.packDays <= cadence_days * 2) }];
-    let rest = usage.filter((u) => u.packDays > cadence_days * 2);
+    // Each delivery should last about one cadence. Items that would pile up go on
+    // slower deliveries timed to when the first of them runs out (whole weeks, at
+    // most 180 days), at most three deliveries in all.
+    const fits = (u, c) => Math.max(1, Math.ceil(c / u.packDays - 0.1)) * u.packDays <= c * 1.35; // one delivery lasts about one cadence
+    const groups = [{ cadence_days, rows: usage.filter((u) => fits(u, cadence_days)) }];
+    let rest = usage.filter((u) => !fits(u, cadence_days));
     while (rest.length) {
-      const floor = groups.at(-1).rows.length ? groups.at(-1).cadence_days * 2 : cadence_days;
-      const c = Math.min(180, Math.max(floor, Math.floor(Math.min(...rest.map((u) => u.packDays), 180) / 7) * 7));
-      const last = groups.length >= 3 || c === 180;
-      groups.push({ cadence_days: c, rows: last ? rest : rest.filter((u) => u.packDays <= c * 2.5) });
-      rest = last ? [] : rest.filter((u) => u.packDays > c * 2.5);
+      const prev = groups.filter((g) => g.rows.length).at(-1);
+      const c = Math.min(180, Math.max(prev ? prev.cadence_days * 2 : cadence_days, Math.floor(Math.min(...rest.map((u) => u.packDays), 180) / 7) * 7));
+      const last = groups.filter((g) => g.rows.length).length >= 2 || c === 180;
+      let rows = last ? rest : rest.filter((u) => fits(u, c));
+      if (!rows.length) rows = [rest.reduce((a, b) => (a.packDays <= b.packDays ? a : b))];
+      groups.push({ cadence_days: c, rows });
+      rest = rest.filter((u) => !rows.includes(u));
     }
     const nonEmpty = groups.filter((g) => g.rows.length);
     const plan = nonEmpty.map((g) => {
@@ -1354,8 +1357,9 @@ export class Store {
       id: s.id,
       status: s.status,
       status_reason: s.status_reason,
-      items: priced.lines.map(({ sku, name, quantity, unit_price_cents }) => ({ sku, name, quantity, unit_price_cents })),
+      items: priced.lines.map(({ sku, name, quantity, unit_price_cents }) => ({ sku, name, quantity, unit_price_cents, lasts_days: this.#lastsDays(s.account_id, sku, quantity) })),
       cadence_days: s.cadence_days,
+      ...this.#supplyNote(s.account_id, priced.lines, s.cadence_days),
       next_order_date: next,
       next_charge_date: next && this.#chargeDate(next, bank),
       estimated_arrival_date: next && addDays(next, this.fulfillment === 'mock' ? 3 : 5),
@@ -1372,6 +1376,31 @@ export class Store {
       updated_at: s.updated_at,
       canceled_at: s.canceled_at,
     };
+  }
+
+  /** Days `quantity` packs of sku last this household, from typical use per person. */
+  #lastsDays(accountId, sku, quantity) {
+    const prod = this.products.get(sku);
+    const people = this.db.prepare('SELECT household_size FROM accounts WHERE id = ?').get(accountId)?.household_size ?? 2;
+    const perDay = prod ? monthlyUsage(prod, people) / 30 : 0;
+    return perDay > 0 ? Math.round((quantity * baseUnitsPerPack(prod)) / perDay) : null;
+  }
+
+  /** A plain warning when a subscription's items run out before the next delivery, or pile up. */
+  #supplyNote(accountId, lines, cadence) {
+    const people = this.db.prepare('SELECT household_size FROM accounts WHERE id = ?').get(accountId)?.household_size ?? 2;
+    const short = []; const piles = [];
+    for (const l of lines) {
+      const d = this.#lastsDays(accountId, l.sku, l.quantity);
+      if (d == null) continue;
+      if (d < cadence * 0.95) short.push(`${l.name} lasts about ${d} days`);
+      else if (d > cadence * 1.6) piles.push(`${l.name} lasts about ${d} days`);
+    }
+    if (!short.length && !piles.length) return {};
+    const parts = [];
+    if (short.length) parts.push(`Runs out before the next delivery (every ${cadence} days) for ${people} people: ${short.join('; ')}. Raise the quantity, shorten cadence_days, or move it to its own faster subscription.`);
+    if (piles.length) parts.push(`Piles up (delivered every ${cadence} days): ${piles.join('; ')}. Consider a slower subscription for it.`);
+    return { supply_check: parts.join(' ') };
   }
 
   #touch(account, subId, fields) {

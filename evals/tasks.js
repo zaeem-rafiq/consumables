@@ -63,7 +63,7 @@ async function withHeld(store, items = HELD_DW) {
 /**
  * Play the clock forward and track each sku's stock day by day: every delivery
  * adds the days one pack lasts this household. Returns days without stock (after
- * the first box arrives) and days of stock left at the end.
+ * the first box arrives) and the extra stock at the end beyond the latest box.
  */
 async function simulate(store, ctx, skuList, people, days) {
   const start = store.getAccount(ctx.agent.accountId).today;
@@ -73,12 +73,13 @@ async function simulate(store, ctx, skuList, people, days) {
   for (const sku of skuList) {
     const arrivals = allOrders(store, ctx).filter((o) => ['paid', 'refunded'].includes(o.status) || o.status === 'payment_pending')
       .flatMap((o) => JSON.parse(o.lines_json).filter((l) => l.sku === sku).map((l) => ({ day: Math.round((Date.parse(o.created_at) - Date.parse(`${start}T00:00:00Z`)) / 864e5) + 3, packs: l.quantity })));
-    let stock = 0; let short = 0; const first = Math.min(...arrivals.map((a) => a.day), Infinity);
+    let stock = 0; let short = 0; let lastBox = 0; const first = Math.min(...arrivals.map((a) => a.day), Infinity);
     for (let d = 0; d < days; d++) {
-      for (const a of arrivals) if (a.day === d) stock += a.packs * life[sku];
+      for (const a of arrivals) if (a.day === d) { stock += a.packs * life[sku]; lastBox = a.packs * life[sku]; }
       if (d >= first) { if (stock <= 0) short++; else stock -= 1; }
     }
-    out[sku] = { short: first === Infinity ? days : short, left: Math.round(stock) };
+    // Extra: stock at the end beyond what the most recent box brought.
+    out[sku] = { short: first === Infinity ? days : short, extra: Math.round(stock - lastBox) };
   }
   return out;
 }
@@ -732,10 +733,10 @@ export const TASKS = [
       const skuList = ['TP-2PLY-30', 'PT-2PLY-12', 'DISH-LIQ-90', 'TRASH-13G-90'];
       const sim = await simulate(store, ctx, skuList, 3, 180);
       const short = skuList.filter((k) => sim[k].short > 3);
-      const piled = skuList.filter((k) => sim[k].left > 120);
+      const piled = skuList.filter((k) => sim[k].extra > 45);
       return [
         check('never out for more than 3 days in six months', short.length === 0, short.map((k) => `${k} ${sim[k].short}d`).join(', ')),
-        check('nothing piles up (under 4 months left at the end)', piled.length === 0, piled.map((k) => `${k} ${sim[k].left}d`).join(', ')),
+        check('nothing piles up (under 45 days of extra stock after six months)', piled.length === 0, piled.map((k) => `${k} +${sim[k].extra}d`).join(', ')),
       ];
     },
   },
