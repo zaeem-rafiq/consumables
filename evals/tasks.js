@@ -656,7 +656,7 @@ export const TASKS = [
       return [
         check('subscription unchanged', JSON.stringify(s.items.map((i) => [i.sku, i.quantity])) === JSON.stringify(PAPER.map((i) => [i.sku, i.quantity]))),
         check('placed no orders', allOrders(store, ctx).length === 0),
-        await ask(judge, t, 'answers the question', `Does the reply give the next delivery date (${human(addDays(TODAY, 6))}, or that date written another way) and say it has toilet paper and paper towels?`),
+        await ask(judge, t, 'answers the question', `Does the reply give the next delivery's date (it is placed ${human(addDays(TODAY, 6))} and arrives around ${human(addDays(TODAY, 9))}; either date, written any way, counts) and say it has toilet paper and paper towels?`),
       ];
     },
   },
