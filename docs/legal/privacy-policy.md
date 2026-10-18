@@ -31,7 +31,17 @@ Order confirmations, tracking numbers, delivery status and any problems the reta
 
 When the website, API or MCP server is used, our servers record technical information such as IP address, the time of the request, which API call or page was used, the name your assistant or app identifies itself with, and error details. We use this to run the Service, prevent abuse and fix problems.
 
-The website uses only the cookies needed to run it [CODE: confirm; the current site sets none]. We don't use advertising cookies, tracking pixels or third-party analytics. [Update this if analytics are added.]
+The website sets only three cookies of its own, all needed to run it:
+
+| Cookie | What it does | How long it lasts |
+|---|---|---|
+| `domaru_owner` | Keeps the owner signed in | 30 days |
+| `domaru_back` | Remembers which page to return you to after Stripe's card page | 1 hour |
+| `domaru_admin` | Signs in Domaru's own operators (not customers) | 12 hours |
+
+We don't use advertising cookies, tracking pixels or third-party analytics. When you add a payment method on Stripe's page, Stripe sets its own cookies under its privacy policy.
+
+Our pages currently load fonts from Google Fonts, so Google receives your IP address when you visit.
 
 **What we don't get**
 
@@ -74,7 +84,7 @@ We share information only as needed to run the Service:
 
 ## 5. How we protect it
 
-Sign-in links expire and work only once. We store the credentials that connected assistants and developer keys use only in hashed form, so we can't read them back. [CODE: confirm both for the new sign-in.] Connections to the Service are encrypted. Card and bank details stay with Stripe. Access to customer information is limited to the people who need it to run the Service. No system is perfectly secure, and if a breach affects your information, we'll notify you as the law requires.
+Sign-in links work only once and expire after 30 minutes. Sign-in and approval links, sessions, and the credentials that connected assistants and developer keys use are stored only in scrambled (hashed) form, so we can't read them back. Connections to the Service are encrypted. Card and bank details stay with Stripe. Access to customer information is limited to the people who need it to run the Service. No system is perfectly secure, and if a breach affects your information, we'll notify you as the law requires.
 
 Keep the email account you sign in with secure, and disconnect any assistant you no longer use on domaru.app. A connected assistant can see your orders and addresses and order within your limits.
 
