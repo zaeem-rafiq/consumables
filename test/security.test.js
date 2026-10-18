@@ -335,3 +335,42 @@ test('S2-4: the Connect page names the website Allow sends the owner to', async 
   });
   assert.match(page, /sends you back to <strong>evil\.example<\/strong>/);
 });
+
+test('S2-C: the owner sees the developer key an app signed up with, and can switch it off', async () => {
+  const { store, agent, owner, created } = await setup();
+  const [dev] = store.listGrants(owner);
+  assert.equal(dev.kind, 'developer_key');
+  assert.ok(dev.last_used_at, 'shows when the app last used it');
+  assert.throws(() => store.revokeGrant(agent, dev.id), (e) => e.status === 403);
+  assert.deepEqual(store.revokeGrant(owner, dev.id), { revoked: true });
+  assert.throws(() => store.authenticate(created.api_key), (e) => e.status === 401);
+  assert.equal(store.listGrants(owner).length, 0);
+  assert.throws(() => store.revokeGrant(owner, dev.id), (e) => e.status === 404);
+});
+
+test('S2-F: well-known assistants are verified by their website; others get a warning', async () => {
+  const { connectPage } = await import('../src/owner.js');
+  const { store, owner } = await setup();
+  const real = store.registerClient({ client_name: 'claude', redirect_uris: ['https://claude.ai/api/mcp/auth_callback'] });
+  const fake = store.registerClient({ client_name: 'Claude', redirect_uris: ['https://claude-ai.example/cb'] });
+  assert.deepEqual(store.oauthClient(real.client_id, 'https://claude.ai/api/mcp/auth_callback'), { id: real.client_id, name: 'Claude', verified: 'Claude' });
+  assert.equal(store.oauthClient(fake.client_id, 'https://claude-ai.example/cb').verified, null);
+
+  const page = (client, redirect_uri) => connectPage({
+    client, account: { default_payment_method_id: null }, checklist: { address: false, payment_method: false, terms: false },
+    addresses: [], paymentMethods: [], policy: { approval_required_above_cents: 10000, per_order_limit_cents: 15000, monthly_limit_cents: 40000 },
+    oauth: { client_id: client.id, redirect_uri }, back: '/oauth/authorize', testMode: true,
+  });
+  assert.match(page(store.oauthClient(real.client_id, 'https://claude.ai/api/mcp/auth_callback'), 'https://claude.ai/api/mcp/auth_callback'), /Verified/);
+  assert.match(page(store.oauthClient(fake.client_id, 'https://claude-ai.example/cb'), 'https://claude-ai.example/cb'), /hasn&#39;t verified this assistant|hasn't verified this assistant/);
+
+  // The grant remembers it was verified, so the owner page can say so.
+  store.acceptTerms(owner);
+  const verifier = randomBytes(32).toString('base64url');
+  const challenge = createHash('sha256').update(verifier).digest('base64url');
+  const code = store.createAuthCode(owner, { client_id: real.client_id, redirect_uri: 'https://claude.ai/api/mcp/auth_callback', code_challenge: challenge, code_challenge_method: 'S256' });
+  store.oauthToken({ grant_type: 'authorization_code', code, code_verifier: verifier, client_id: real.client_id, redirect_uri: 'https://claude.ai/api/mcp/auth_callback' });
+  const grant = store.listGrants(owner).find((g) => g.kind === 'assistant');
+  assert.equal(grant.client_name, 'Claude');
+  assert.equal(grant.verified, true);
+});

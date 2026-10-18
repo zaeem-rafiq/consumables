@@ -79,7 +79,7 @@ Requires Node 22.5+. It uses the built-in `node:sqlite`, so there are no native 
 
 ```bash
 npm install
-npm test          # 68 tests: store, HTTP API, MCP, UCP, Stripe (faked API), fulfillment, security, refunds and problems
+npm test          # 74 tests: store, HTTP API, MCP, UCP, Stripe (faked API), fulfillment, security, refunds and problems
 npm start         # HTTP API + remote MCP on http://localhost:8787 (see Configuration below)
 npm run mcp       # local MCP server over stdio
 ```

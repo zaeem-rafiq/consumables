@@ -71,6 +71,21 @@ const okRedirect = (u) => {
     return false;
   }
 };
+/**
+ * Assistants Domaru recognizes, by the website Connect sends the owner back to.
+ * Anyone can register under any name, so these show the name from this list and
+ * a Verified mark; every other assistant gets a warning on the Connect page.
+ */
+export const VERIFIED_ASSISTANTS = [
+  { name: 'Claude', hosts: ['claude.ai', 'claude.com'] },
+  { name: 'ChatGPT', hosts: ['chatgpt.com', 'chat.openai.com'] },
+];
+export function verifiedAssistant(redirectUri) {
+  let host;
+  try { host = new URL(redirectUri).hostname.toLowerCase(); } catch { return null; }
+  return VERIFIED_ASSISTANTS.find((a) => a.hosts.includes(host))?.name ?? null;
+}
+const DEVELOPER_KEY = 'developer_key';
 const isEmail = (s) => typeof s === 'string' && /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(s) && s.length <= 254;
 const BANK_OFFER = `Switch to bank payments and save ${PRICING.bank_discount_pct}% on every delivery.`;
 
@@ -158,8 +173,8 @@ export class Store {
     // Placeholder until the owner claims the account; nobody holds a key that matches it.
     const unclaimed = hash(`unclaimed:${randomBytes(24).toString('hex')}`);
     const now = start_date ? `${start_date}T12:00:00.000Z` : new Date().toISOString();
-    this.db.prepare(`INSERT INTO accounts (id, name, email, mode, api_key_hash, owner_key_hash, household_size, policy_json, clock, created_at)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`).run(accountId, name, email, this.mode, hash(apiKey), unclaimed, household_size, j({ ...DEFAULT_POLICY }), now, now);
+    this.db.prepare(`INSERT INTO accounts (id, name, email, mode, api_key_hash, owner_key_hash, household_size, policy_json, clock, created_at, api_key_issued_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`).run(accountId, name, email, this.mode, hash(apiKey), unclaimed, household_size, j({ ...DEFAULT_POLICY }), now, now, now);
     this.#emit(accountId, 'account.created', { account_id: accountId });
     this.#sendOwnerInvite(this.#account(accountId));
     return {
@@ -300,7 +315,8 @@ export class Store {
     const c = clientId ? this.db.prepare('SELECT * FROM oauth_clients WHERE id = ?').get(clientId) : null;
     if (!c) throw badRequest('invalid_client', 'Unknown client.');
     if (redirectUri !== undefined && !p(c.redirect_uris_json).includes(redirectUri)) throw badRequest('invalid_redirect_uri', 'redirect_uri is not registered for this client.');
-    return { id: c.id, name: c.name };
+    const verified = redirectUri ? verifiedAssistant(redirectUri) : null;
+    return { id: c.id, name: verified ?? c.name, verified };
   }
 
   /** What the Connect page still needs before the owner can tap Allow. */
@@ -334,8 +350,8 @@ export class Store {
     if (grantId) {
       this.db.prepare('UPDATE grants SET access_hash = ?, access_expires_at = ?, refresh_hash = ? WHERE id = ?').run(hash(access), expires, hash(refresh), grantId);
     } else {
-      this.db.prepare('INSERT INTO grants (id, account_id, client_id, client_name, access_hash, access_expires_at, refresh_hash, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)')
-        .run(id('grant'), accountId, client.id, client.name, hash(access), expires, hash(refresh), new Date().toISOString());
+      this.db.prepare('INSERT INTO grants (id, account_id, client_id, client_name, access_hash, access_expires_at, refresh_hash, created_at, verified_as) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)')
+        .run(id('grant'), accountId, client.id, client.name, hash(access), expires, hash(refresh), new Date().toISOString(), client.verified ?? null);
       this.#emit(accountId, 'assistant.connected', { client_name: client.name });
     }
     return { access_token: access, token_type: 'Bearer', expires_in: 3600, refresh_token: refresh, scope: 'shop' };
@@ -350,7 +366,7 @@ export class Store {
       const challenge = createHash('sha256').update(String(code_verifier ?? '')).digest('base64url');
       this.db.prepare('UPDATE oauth_codes SET used_at = ? WHERE code_hash = ?').run(new Date().toISOString(), row.code_hash);
       if (!safeEqual(challenge, row.code_challenge)) throw fail('invalid_grant', 'PKCE verification failed.');
-      return this.#issueTokens(row.account_id, this.oauthClient(client_id));
+      return this.#issueTokens(row.account_id, this.oauthClient(client_id, row.redirect_uri));
     }
     if (grant_type === 'refresh_token') {
       const g = refresh_token ? this.db.prepare('SELECT * FROM grants WHERE refresh_hash = ?').get(hash(String(refresh_token))) : null;
@@ -360,13 +376,26 @@ export class Store {
     throw fail('unsupported_grant_type', 'Use authorization_code or refresh_token.');
   }
 
+  /** Everything that can shop for the household: connected assistants, and the key of an app that signed it up directly. */
   listGrants(auth) {
-    return this.db.prepare('SELECT * FROM grants WHERE account_id = ? AND revoked_at IS NULL ORDER BY created_at').all(auth.accountId)
-      .map((g) => ({ id: g.id, client_name: g.client_name, connected_at: g.created_at, last_used_at: g.last_used_at }));
+    const a = this.#account(auth.accountId);
+    const devKey = a.api_key_issued_at
+      ? [{ id: DEVELOPER_KEY, kind: DEVELOPER_KEY, client_name: 'Developer key', verified: false, connected_at: a.api_key_issued_at, last_used_at: a.api_key_used_at }]
+      : [];
+    return [...devKey, ...this.db.prepare('SELECT * FROM grants WHERE account_id = ? AND revoked_at IS NULL ORDER BY created_at').all(auth.accountId)
+      .map((g) => ({ id: g.id, kind: 'assistant', client_name: g.client_name, verified: !!g.verified_as, connected_at: g.created_at, last_used_at: g.last_used_at }))];
   }
 
   revokeGrant(auth, grantId) {
     if (auth.role !== 'owner') throw forbidden('Only the account owner can disconnect an assistant.');
+    if (grantId === DEVELOPER_KEY) {
+      // Swap in a hash nobody holds a key for: the app's key stops working at once.
+      const off = this.db.prepare('UPDATE accounts SET api_key_hash = ?, api_key_issued_at = NULL WHERE id = ? AND api_key_issued_at IS NOT NULL')
+        .run(hash(`revoked:${randomBytes(24).toString('hex')}`), auth.accountId);
+      if (!off.changes) throw notFound('grant', grantId);
+      this.#emit(auth.accountId, 'assistant.disconnected', { client_name: 'developer key' });
+      return { revoked: true };
+    }
     const g = this.db.prepare('SELECT * FROM grants WHERE id = ? AND account_id = ?').get(grantId, auth.accountId);
     if (!g) throw notFound('grant', grantId);
     this.db.prepare('UPDATE grants SET revoked_at = ? WHERE id = ?').run(new Date().toISOString(), g.id);
@@ -379,7 +408,10 @@ export class Store {
     if (!key) throw unauthorized('Missing credentials.', 'Connect Domaru from your assistant, or send "Authorization: Bearer ck_test_..." (developers: POST /v1/accounts).');
     const h = hash(key);
     const agent = this.db.prepare('SELECT id FROM accounts WHERE api_key_hash = ?').get(h);
-    if (agent) return { accountId: agent.id, role: 'agent' };
+    if (agent) {
+      this.db.prepare('UPDATE accounts SET api_key_used_at = ? WHERE id = ?').run(new Date().toISOString(), agent.id);
+      return { accountId: agent.id, role: 'agent' };
+    }
     const owner = this.db.prepare('SELECT id FROM accounts WHERE owner_key_hash = ?').get(h);
     if (owner) return { accountId: owner.id, role: 'owner' };
     // Connected assistants: shop within limits, never approve or change limits.
