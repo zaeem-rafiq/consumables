@@ -455,7 +455,7 @@ export class Store {
           // The smallest change that keeps them stocked: more packs of what runs short, same schedule.
           const items = x.items.map((i) => ({
             sku: i.sku,
-            quantity: i.lasts_days && i.lasts_days < x.cadence_days * 0.95 ? Math.ceil((i.quantity * x.cadence_days) / i.lasts_days - 0.1) : i.quantity,
+            quantity: i.lasts_days && i.lasts_days < x.cadence_days * 0.98 ? Math.ceil((i.quantity * x.cadence_days) / i.lasts_days - 0.01) : i.quantity,
           }));
           return { subscription_id: x.id, supply_check: x.supply_check, suggested_update: { subscription_id: x.id, items } };
         });
@@ -760,22 +760,29 @@ export class Store {
     // One pack of some things (dish soap, toothpaste) lasts months. Sending those
     // on the main cadence piles them up, so they go on slower deliveries. Every
     // item must pass the same supply check subscriptions report: each delivery
-    // lasts at least ~one cadence (5% slack) and at most 1.35 cadences. Slower
+    // lasts at least one cadence and at most 1.25 (the extra adds up over months). Slower
     // deliveries use the whole-week cadence (up to 180 days) that fits the most
-    // remaining items; at most three deliveries. Anything that fits none (a pack
+    // remaining items; at most four deliveries. Anything that fits none (a pack
     // that outlasts the slowest delivery) is suggested as a one-time order.
-    const qty = (u, c) => Math.max(1, Math.ceil(c / u.packDays - 0.04));
-    const fits = (u, c) => qty(u, c) * u.packDays <= c * 1.35;
+    const qty = (u, c) => Math.max(1, Math.ceil(c / u.packDays - 0.01));
+    const fits = (u, c) => qty(u, c) * u.packDays <= c * 1.25;
+    const policy = account ? p(account.policy_json) : {};
+    const caps = [policy.approval_required_above_cents, policy.per_order_limit_cents].filter((x) => x != null);
+    const cap = caps.length ? Math.min(...caps) : null;
     const groups = [{ cadence_days, rows: usage.filter((u) => fits(u, cadence_days)) }];
     let rest = usage.filter((u) => !fits(u, cadence_days));
-    while (rest.length && groups.filter((g) => g.rows.length).length < 3) {
+    while (rest.length && groups.filter((g) => g.rows.length).length < (rest.some((u) => u.packDays <= 180 * 1.25) ? 4 : 3)) {
       // Timed to the fastest-running item left: one pack of it per delivery.
       const first = rest.reduce((x, y) => (x.packDays <= y.packDays ? x : y));
       let best = null;
       for (let c = 7; c <= 180; c += 7) {
         if (c <= (groups.filter((g) => g.rows.length).at(-1)?.cadence_days ?? 0) || !fits(first, c) || qty(first, c) > Math.max(2, Math.ceil(28 / first.packDays))) continue;
         const rows = rest.filter((u) => fits(u, c));
-        if (!best || rows.length > best.rows.length) best = { cadence_days: c, rows };
+        // A delivery the owner has to approve every time is worse than one more box.
+        const over = cap != null && this.price(rows.map((u) => ({ sku: u.prod.sku, quantity: qty(u, c) })), { subscription: true }).amounts.total_cents > cap;
+        // Most items wins; on a tie, the least extra stock per delivery.
+        const waste = rows.reduce((sum, u) => sum + (qty(u, c) * u.packDays) / c - 1, 0);
+        if (!best || (best.over && !over) || (best.over === over && (rows.length > best.rows.length || (rows.length === best.rows.length && waste < best.waste)))) best = { cadence_days: c, rows, over, waste };
       }
       const exact = Math.min(180, Math.max(7, Math.floor(first.packDays)));
       if (!best && fits(first, exact)) best = { cadence_days: exact, rows: rest.filter((u) => fits(u, exact)) };
@@ -785,7 +792,7 @@ export class Store {
     }
     const once = rest.map(({ prod, packDays }) => ({
       sku: prod.sku, name: prod.name, quantity: 1, lasts_days: Number.isFinite(packDays) ? Math.round(packDays) : null,
-      note: packDays > 180 * 1.35
+      note: packDays > 180 * 1.25
         ? `One pack lasts about ${Math.round(packDays)} days, longer than any delivery schedule. Add it to a one-time order now and again when it runs low.`
         : `Doesn't fit these delivery schedules without running short or piling up. Add it to the first order once, or give it its own subscription every ${Math.min(180, Math.max(7, Math.floor(packDays / 7) * 7))} days if they want it automatic.`,
     }));
@@ -794,8 +801,8 @@ export class Store {
       const items = g.rows.map(({ prod, perDay }) => {
         const perPack = baseUnitsPerPack(prod);
         // Round up: a delivery that runs out before the next one is worse than a
-        // few spare rolls. Only a shortfall under 5% rounds down.
-        const quantity = Math.max(1, Math.ceil((perDay * g.cadence_days) / perPack - 0.04));
+        // few spare rolls; even a small shortfall adds up over months.
+        const quantity = Math.max(1, Math.ceil((perDay * g.cadence_days) / perPack - 0.01));
         return {
           sku: prod.sku, name: prod.name, quantity,
           days_of_supply: perDay > 0 ? Math.round((quantity * perPack) / perDay) : null,
@@ -1427,8 +1434,8 @@ export class Store {
     for (const l of lines) {
       const d = this.#lastsDays(accountId, l.sku, l.quantity);
       if (d == null) continue;
-      if (d < cadence * 0.95) short.push(`${l.name} lasts about ${d} days`);
-      else if (d > cadence * 1.6) piles.push(`${l.name} lasts about ${d} days`);
+      if (d < cadence * 0.98) short.push(`${l.name} lasts about ${d} days`);
+      else if (d > cadence * 1.3) piles.push(`${l.name} lasts about ${d} days`);
     }
     if (!short.length && !piles.length) return {};
     const parts = [];

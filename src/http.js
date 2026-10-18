@@ -20,7 +20,7 @@ function routes(store) {
     ['GET', '/v1/categories', 'List product categories', 'none', () => store.listCategories()],
     ['GET', '/v1/products', 'Search products (?q=, ?category=, ?tag=)', 'none', ({ query }) => ({ data: store.listProducts(query) })],
     ['GET', '/v1/products/:sku', 'Get one product', 'none', ({ params }) => store.getProduct(params.sku)],
-    ['POST', '/v1/recommendations', 'Recommend a bundle for a household { household_size, skus?, cadence_days? } -> plan (one to three deliveries; create one subscription each) and order_once (items that fit no schedule)', 'optional', ({ auth, body }) => store.recommend(auth, body)],
+    ['POST', '/v1/recommendations', 'Recommend a bundle for a household { household_size, skus?, cadence_days? } -> plan (one to four deliveries; create one subscription each) and order_once (items that fit no schedule)', 'optional', ({ auth, body }) => store.recommend(auth, body)],
 
     ['POST', '/v1/accounts', "Developers: create an account { name, email (the owner's), household_size? } -> api_key. The owner is emailed a sign-in link. Households use Connect Domaru (OAuth) instead", 'none', ({ body }) => store.createAccount(body)],
     ['POST', '/v1/account/owner_invite', "Re-send the owner's sign-in link to the owner email on file", 'agent', ({ auth }) => store.resendOwnerInvite(auth)],
@@ -113,7 +113,7 @@ function llmsTxt(table, baseUrl) {
 
 ## Rules
 - Send an Idempotency-Key header on POST/PATCH so retries never double-order.
-- POST /v1/recommendations returns a plan of one to three deliveries (frequent first, slow for long-lasting items). Create one subscription per plan entry so every item is covered.
+- POST /v1/recommendations returns a plan of one to four deliveries (frequent first, slow for long-lasting items). Create one subscription per plan entry so every item is covered.
 - Quote before you buy: the quote's already_coming lists items already on an open order or a subscription due within a week, so you don't buy them twice.
 - Subscriptions show lasts_days per item and a supply_check when a delivery runs short or piles up before the next one. Fix it (quantity or cadence_days) rather than leaving it.
 - When household_size changes, PATCH /v1/account returns subscriptions_to_adjust: update those quantities or cadences in the same session.

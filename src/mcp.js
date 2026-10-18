@@ -12,7 +12,7 @@ const date = z.string().regex(/^\d{4}-\d{2}-\d{2}$/).describe('Date as YYYY-MM-D
 const idemKey = z.string().max(255).optional().describe('Optional. Reuse the same key when retrying so the action runs at most once.');
 
 const instructions = (base) => `Domaru sells everyday household supplies (toilet paper, paper towels, dish soap, trash bags, detergent...) on subscription, built for agents.
-Typical flow: recommend_bundle -> quote -> create_subscription (recommend_bundle returns a plan of one to three deliveries, from frequent to slow for long-lasting items; create one subscription per plan entry so every item is covered). Then manage with update_subscription, pause_subscription, skip_next_delivery, ship_now, report_supply_level and cancel_subscription.
+Typical flow: recommend_bundle -> quote -> create_subscription (recommend_bundle returns a plan of one to four deliveries, from frequent to slow for long-lasting items; create one subscription per plan entry so every item is covered). Then manage with update_subscription, pause_subscription, skip_next_delivery, ship_now, report_supply_level and cancel_subscription.
 Prices are integer cents (USD). Subscriptions get 5% off; orders of $35+ after discount ship free.
 Spend policy is set by the household's owner. An order outside it is still placed, but held with status "requires_approval": the owner gets an email with Approve and Decline buttons, and nothing is charged unless they approve. Tell the human it is waiting for the owner; do not retry, and never split it into smaller orders to stay under the limits. You cannot approve orders or change limits. The owner changes limits by signing in at ${base}/owner with their email (no password; Domaru emails a link).
 Households connect Domaru from their assistant (Connect / sign in), which sets up the address, card and limits; you then shop within those limits. Developers without an account can call create_account (it emails the owner and returns an api_key attached to this session over stdio).
@@ -68,7 +68,7 @@ export function buildMcpServer(store, session, { attachKeyOnSignup = true } = {}
 
   tool('recommend_bundle', {
     title: 'Recommend a bundle',
-    description: 'Suggest quantities for recurring deliveries based on household size and cadence. Returns plan: one to three deliveries (each with items and cadence_days), so long-lasting items come less often. Create one subscription per plan entry. order_once lists anything that fits no schedule (offer it as a one-time order). Without skus, plans a starter set of everyday essentials.',
+    description: 'Suggest quantities for recurring deliveries based on household size and cadence. Returns plan: one to four deliveries (each with items and cadence_days), so long-lasting items come less often. Create one subscription per plan entry. order_once lists anything that fits no schedule (offer it as a one-time order). Without skus, plans a starter set of everyday essentials.',
     readOnly: true,
     input: {
       household_size: z.number().int().min(1).max(20).optional().describe('People in the household; defaults to the account value'),
