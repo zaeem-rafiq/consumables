@@ -114,8 +114,12 @@ export class StripePayments {
 
   async ensureCustomer({ accountId, name, email, existing }) {
     if (existing) return existing;
-    const c = await this.#request('POST', '/v1/customers', { name, email, metadata: { domaru_account_id: accountId } }, `cus-${accountId}`);
-    return c.id;
+    try {
+      const c = await this.#request('POST', '/v1/customers', { name, email, metadata: { domaru_account_id: accountId } }, `cus-${accountId}`);
+      return c.id;
+    } catch (err) {
+      throw upstream(err);
+    }
   }
 
   /** Test mode convenience: attach a Stripe test token such as pm_card_visa. */
@@ -138,7 +142,15 @@ export class StripePayments {
    * A Stripe-hosted page where the human saves a card, or signs in to their
    * bank to connect an account (type 'bank'). Nothing is charged.
    */
-  async createSetupLink({ customerRef, accountId, type = 'card' }) {
+  async createSetupLink(args) {
+    try {
+      return await this.#createSetupLink(args);
+    } catch (err) {
+      throw err instanceof ApiError ? err : upstream(err);
+    }
+  }
+
+  async #createSetupLink({ customerRef, accountId, type = 'card' }) {
     const bank = type === 'bank';
     const s = await this.#request('POST', '/v1/checkout/sessions', {
       mode: 'setup',
@@ -155,7 +167,13 @@ export class StripePayments {
 
   /** Resolve a finished setup session to the card or bank account it saved. */
   async completeSetup(sessionId) {
-    const s = await this.#request('GET', `/v1/checkout/sessions/${encodeURIComponent(sessionId)}`, { expand: ['setup_intent.payment_method'] });
+    let s;
+    try {
+      s = await this.#request('GET', `/v1/checkout/sessions/${encodeURIComponent(sessionId)}`, { expand: ['setup_intent.payment_method'] });
+    } catch (err) {
+      if (err.stripe?.status === 404 || err.stripe?.status === 400) return null;
+      throw upstream(err);
+    }
     if (s.status !== 'complete' || !s.setup_intent?.payment_method) return null;
     const mandate = typeof s.setup_intent.mandate === 'string' ? s.setup_intent.mandate : s.setup_intent.mandate?.id;
     return { accountId: s.client_reference_id, customerRef: s.customer, card: { ...present(s.setup_intent.payment_method), mandate: mandate ?? null } };

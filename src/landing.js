@@ -88,6 +88,9 @@ a { color: inherit; }
 .nav__links { display: flex; gap: var(--s6); }
 .nav__links a { color: var(--muted); text-decoration: none; font-weight: 500; }
 .nav__links a:hover { color: var(--ink); }
+.nav__signin { color: var(--ink); font-weight: 600; text-decoration: none; padding: var(--s2) var(--s4); border: 1px solid var(--rule); border-radius: var(--radius); }
+.nav__signin:hover { border-color: var(--ink); }
+.nav__signin:focus-visible { outline: 2px solid var(--ink); outline-offset: 2px; }
 @media (max-width: 1023px) { .nav__links { display: none; } }
 
 /* hero */
@@ -205,7 +208,7 @@ a { color: inherit; }
 
 footer { padding-block: var(--s8) var(--s10); display: grid; gap: var(--s5); }
 .foot__row { display: flex; flex-wrap: wrap; gap: var(--s4); justify-content: space-between; align-items: center; }
-.foot__row nav { display: flex; gap: var(--s5); color: var(--muted); font-weight: 500; }
+.foot__row nav { display: flex; flex-wrap: wrap; gap: var(--s3) var(--s5); color: var(--muted); font-weight: 500; }
 .foot__row nav a { text-decoration: none; } .foot__row nav a:hover { color: var(--ink); }
 .agent-note { font: 400 0.8125rem/1.6 var(--mono); color: var(--muted); max-width: 82ch; }
 `;
@@ -243,8 +246,8 @@ export function landingBody({ base = '' } = {}) {
   const tabs = [
     ['mcp', 'Claude (MCP)', `claude mcp add --transport http domaru ${base}/mcp`, '# then ask: "Keep us stocked on paper towels, under $60 a month."'],
     ['ucp', 'Gemini (UCP)', `curl ${base}/.well-known/ucp`, '# checkouts live at /ucp/checkout-sessions, with your agent key'],
-    ['rest', 'REST', `curl -X POST ${base}/v1/accounts -d '{"name":"Our flat","household_size":3}'`, '# returns an agent api_key and an owner_key for the human'],
-    ['prompt', 'Setup prompt', `Read ${base}/llms.txt, open a Domaru account for our home, and send me the card link and the owner key.`, '# paste into any assistant that can browse or call tools'],
+    ['rest', 'REST', `curl -X POST ${base}/v1/accounts -d '{"name":"Our flat","email":"you@example.com"}'`, '# returns an agent api_key; the owner gets a sign-in link by email'],
+    ['prompt', 'Setup prompt', `Read ${base}/llms.txt and connect Domaru for our home. I'll approve it from the email.`, '# paste into any assistant that can browse or call tools'],
   ];
 
   return `
@@ -253,6 +256,7 @@ export function landingBody({ base = '' } = {}) {
     <a class="logo" href="#top"><i aria-hidden="true"></i>Domaru</a>
     <div class="nav__right">
       <nav class="nav__links" aria-label="Sections"><a href="#limits">Limits</a><a href="#how">How it works</a><a href="#prices">Prices</a><a href="#assistants">For assistants</a></nav>
+      <a class="nav__signin" href="${esc(base)}/owner">Sign in</a>
     </div>
   </header>
 
@@ -280,7 +284,7 @@ export function landingBody({ base = '' } = {}) {
             </ol></div>
           </div>
           <div class="owner">
-            <p class="owner__eyebrow">Your phone · owner key</p>
+            <p class="owner__eyebrow">Your phone · owner email</p>
             <p class="owner__title">Held for you</p>
             <p class="owner__item"><b>${esc(pods.name.replace('Dishwasher Pods, ', 'Dishwasher Pods, ').replace(' count', ' ct'))} × 8</b><span>Over your $150 per-order limit</span></p>
             <p class="owner__amount">${usd(stockTotal)}</p>
@@ -347,7 +351,7 @@ export function landingBody({ base = '' } = {}) {
   <footer>
     <div class="foot__row">
       <a class="logo" href="#top"><i aria-hidden="true"></i>Domaru</a>
-      <nav aria-label="Legal"><a href="${esc(base)}/terms">Terms</a><a href="${esc(base)}/privacy">Privacy</a><a href="${esc(base)}/llms.txt">llms.txt</a></nav>
+      <nav aria-label="Legal"><a href="${esc(base)}/terms">Terms</a><a href="${esc(base)}/privacy">Privacy</a><a href="${esc(base)}/refunds">Refunds</a><a href="mailto:support@domaru.app">support@domaru.app</a><a href="${esc(base)}/llms.txt">llms.txt</a></nav>
     </div>
     <p class="agent-note">A note for AI agents reading this page: start at /llms.txt. Quote before you buy, and expect orders over your owner's limits to come back as requires_approval. Tell your human; don't retry.</p>
   </footer>
