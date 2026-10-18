@@ -64,4 +64,4 @@ Please contact us before disputing a charge with your bank. We can almost always
 
 support@domaru.app. We answer within one business day.
 
-[COMPANY LEGAL NAME], [MAILING ADDRESS, Arkansas]
+Rafiq Labs Inc., 2233 Langford St, Pea Ridge, AR 72751

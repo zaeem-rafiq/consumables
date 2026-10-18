@@ -4,7 +4,7 @@
 
 **Last updated:** [DATE]
 
-This policy explains what information [COMPANY LEGAL NAME] ("**Domaru**", "**we**") collects when you or an AI assistant acting for you use domaru.app, the Domaru API or the Domaru MCP server, and what we do with it.
+This policy explains what information Rafiq Labs Inc. ("**Domaru**", "**we**") collects when you or an AI assistant acting for you use domaru.app, the Domaru API or the Domaru MCP server, and what we do with it.
 
 **The short version:** we collect what we need to deliver your supplies, charge you correctly and keep your account safe. We share your delivery details with the retailer that delivers your order and your payment details stay with Stripe. **We don't sell your information and we don't use it for advertising.**
 
@@ -115,6 +115,6 @@ If we make a material change, we'll notify account owners by email or through th
 
 ## 10. Contact
 
-[COMPANY LEGAL NAME]
-[MAILING ADDRESS, Arkansas]
+Rafiq Labs Inc.
+2233 Langford St, Pea Ridge, AR 72751
 support@domaru.app

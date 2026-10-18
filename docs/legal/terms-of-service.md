@@ -4,7 +4,7 @@
 
 **Last updated:** [DATE]
 
-These terms are an agreement between you and [COMPANY LEGAL NAME], a Delaware corporation ("**Domaru**", "**we**", "**us**"). They cover the Domaru store at domaru.app, its API and MCP server, and any order or subscription placed through them (together, the "**Service**").
+These terms are an agreement between you and Rafiq Labs Inc., a Delaware corporation ("**Domaru**", "**we**", "**us**"). They cover the Domaru store at domaru.app, its API and MCP server, and any order or subscription placed through them (together, the "**Service**").
 
 By signing in, connecting an assistant, adding a payment method, or placing an order, you agree to these terms, our [Privacy Policy](/privacy) and our [Refund and Delivery Policy](/refunds). If you don't agree, don't use the Service.
 
@@ -64,7 +64,7 @@ You must give us accurate account, delivery and payment information and keep it 
 
 - Payments are processed by **Stripe**. Your full card or bank details go to Stripe, not to us. Stripe's [Services Agreement](https://stripe.com/legal/ssa) and [Privacy Policy](https://stripe.com/privacy) apply to how Stripe handles them.
 - **Card payments.** By adding a card, you authorize us to charge it for orders and subscription renewals placed under these terms, including future charges made while you aren't present.
-- **Bank (ACH) payments.** After your first delivery, we may offer payment by bank account at a discount. If you choose it, you authorize [COMPANY LEGAL NAME] to debit the bank account you provide for each order and subscription renewal in the amount quoted, about [4] business days before the order is placed with the retailer. You can revoke this authorization by removing the bank account or emailing support@domaru.app at least [3] business days before the next debit. If a debit is returned, we won't place that order, and we may charge a returned-payment fee of up to [$X, or none] where the law allows. [LAWYER: confirm Nacha authorization wording; Stripe presents its own mandate text at signup too.]
+- **Bank (ACH) payments.** After your first delivery, we may offer payment by bank account at a discount. If you choose it, you authorize Rafiq Labs Inc. to debit the bank account you provide for each order and subscription renewal in the amount quoted, about [4] business days before the order is placed with the retailer. You can revoke this authorization by removing the bank account or emailing support@domaru.app at least [3] business days before the next debit. If a debit is returned, we won't place that order, and we may charge a returned-payment fee of up to [$X, or none] where the law allows. [LAWYER: confirm Nacha authorization wording; Stripe presents its own mandate text at signup too.]
 - Charges appear on your statement as **DOMARU**.
 - If you dispute a charge with your bank, please contact us first; we can usually fix it faster. We may pause an account while a dispute is open.
 
@@ -122,7 +122,7 @@ If you use the Service for a business, or if you build an app or assistant that 
 
 [LAWYER: choose one of the two options below.]
 
-**[Option A: courts]** These terms are governed by the laws of the State of Arkansas, without regard to conflict-of-law rules. Any dispute will be resolved in the state or federal courts in [COUNTY], Arkansas, except that either of us may bring a claim in small-claims court where you live.
+**[Option A: courts]** These terms are governed by the laws of the State of Arkansas, without regard to conflict-of-law rules. Any dispute will be resolved in the state or federal courts in Benton County, Arkansas, except that either of us may bring a claim in small-claims court where you live.
 
 **[Option B: arbitration]** Any dispute will be resolved by binding individual arbitration administered by the American Arbitration Association under its Consumer Arbitration Rules, except that either of us may bring an individual claim in small-claims court. **You and Domaru each give up the right to a jury trial and to participate in a class action.** You may opt out of this section by emailing support@domaru.app within 30 days of first accepting these terms. [Requires careful drafting: mass-arbitration fee exposure, opt-out mechanics, enforceability with agent-accepted terms.]
 
@@ -136,6 +136,6 @@ If you use the Service for a business, or if you build an app or assistant that 
 
 ## 16. Contact
 
-[COMPANY LEGAL NAME]
-[MAILING ADDRESS, Arkansas]
+Rafiq Labs Inc.
+2233 Langford St, Pea Ridge, AR 72751
 support@domaru.app
