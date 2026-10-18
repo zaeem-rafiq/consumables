@@ -452,7 +452,7 @@ export class Store {
 
   updatePolicy(auth, patch) {
     if (auth.role !== 'owner') {
-      throw forbidden('Only the account owner can change spend policy.', 'Ask the human to change it with their owner_key. Agents cannot raise their own limits.');
+      throw forbidden('Only the account owner can change spend policy.', `The owner changes limits by signing in at ${this.publicUrl}/owner. Agents cannot raise their own limits.`);
     }
     const a = this.#account(auth.accountId);
     const merged = this.#validatePolicy({ ...p(a.policy_json), ...patch });
@@ -971,12 +971,12 @@ export class Store {
     return {
       id: a.id, status: a.status, order_id: a.order_id, amount_cents: a.amount_cents,
       reasons: p(a.reasons_json), created_at: a.created_at, decided_at: a.decided_at,
-      how_to_resolve: a.status === 'pending' ? 'The owner was emailed an Approve / Decline link. Tell them it is waiting. Agents cannot approve.' : undefined,
+      how_to_resolve: a.status === 'pending' ? `The owner was emailed Approve and Decline buttons. Approving places this order even though it is over their limits; they don't need to change any limit first. They can also approve it after signing in at ${this.publicUrl}/owner. Tell them it is waiting. You cannot approve it.` : undefined,
     };
   }
 
   async decideApproval(auth, approvalId, decision) {
-    if (auth.role !== 'owner') throw forbidden('Only the account owner can approve or reject orders.', 'Tell the human an approval is waiting; they resolve it with their owner_key.');
+    if (auth.role !== 'owner') throw forbidden('Only the account owner can approve or reject orders.', `Tell the human an approval is waiting; they approve it from the email or by signing in at ${this.publicUrl}/owner.`);
     const account = this.#account(auth.accountId);
     const a = this.db.prepare('SELECT * FROM approvals WHERE id = ? AND account_id = ?').get(approvalId, account.id);
     if (!a) throw notFound('approval', approvalId);

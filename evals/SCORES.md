@@ -14,3 +14,5 @@ One row per full run. "Tasks" is the share of task runs where every check passed
 | 2026-10-18 | 2e7dbb0 | round 2: quotes flag items already on the way (27 tasks) | claude-haiku-5-5 | 3 | 94% | 98% |
 | 2026-10-18 | e8dca0f | round 3: recommendations never run short (27 tasks) | claude-sonnet-5-5 | 3 | 100% | 100% |
 | 2026-10-18 | e8dca0f | round 3: recommendations never run short (27 tasks) | claude-haiku-5-5 | 3 | 96% | 99% |
+| 2026-10-18 | b25b14e | round 4: recommend returns only the plan (27 tasks) | claude-sonnet-5-5 | 3 | 99% | 100% |
+| 2026-10-18 | b25b14e | round 4: recommend returns only the plan (27 tasks) | claude-haiku-5-5 | 3 | 100% | 100% |
