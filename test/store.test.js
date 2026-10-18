@@ -36,7 +36,7 @@ test('recommendations scale with household size', async () => {
   const six = await store.recommend(agent, { household_size: 10, skus: ['TP-2PLY-30'], cadence_days: 28 });
   assert.equal(two.items[0].quantity, 1);
   assert.ok(six.items[0].quantity > two.items[0].quantity);
-  assert.ok((await store.recommend(agent, {})).items.length >= 8);
+  assert.ok((await store.recommend(agent, {})).plan.flatMap((d) => d.items).length >= 8);
 });
 
 test('subscription lifecycle: create ships today, renews on cadence, delivers', async () => {

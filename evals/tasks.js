@@ -84,7 +84,7 @@ export const TASKS = [
         check('a monthly delivery exists', !!monthly, active.map((s) => `${s.cadence_days}d`).join(',')),
         check('covers at least 5 everyday items', covered.size >= 5, [...covered].join(',')),
         check('nothing piles up (delivered far faster than used)', overstock.length === 0, overstock.join(',')),
-        check('at most two subscriptions', active.length >= 1 && active.length <= 2, `${active.length} active`),
+        check('at most three subscriptions', active.length >= 1 && active.length <= 3, `${active.length} active`),
         check('sized for four people', sized4),
         check('first order went through (not held)', orders(store, ctx).some((o) => o.status === 'paid')),
         await ask(judge, t, 'tells them what it costs', 'Does the reply tell the household roughly how much each delivery or each month will cost, in dollars?'),

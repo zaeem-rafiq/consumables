@@ -744,15 +744,25 @@ export class Store {
     });
     // One pack of some things (dish soap, toothpaste) lasts months. Sending those
     // on the main cadence piles them up, so they go on a slower second delivery.
-    const slowCadence = Math.min(180, cadence_days * 3);
-    const groups = [
-      { cadence_days, rows: usage.filter((u) => u.packDays <= cadence_days * 1.75) },
-      { cadence_days: slowCadence, rows: usage.filter((u) => u.packDays > cadence_days * 1.75) },
-    ].filter((g) => g.rows.length);
-    const plan = groups.map((g) => {
+    // Slower deliveries come about when the first of their items runs out (whole
+    // weeks, at most 180 days), so nothing runs short. Anything that would still
+    // last more than 2.5 deliveries moves to one more, slower delivery.
+    const groups = [{ cadence_days, rows: usage.filter((u) => u.packDays <= cadence_days * 2) }];
+    let rest = usage.filter((u) => u.packDays > cadence_days * 2);
+    while (rest.length) {
+      const floor = groups.at(-1).rows.length ? groups.at(-1).cadence_days * 2 : cadence_days;
+      const c = Math.min(180, Math.max(floor, Math.floor(Math.min(...rest.map((u) => u.packDays), 180) / 7) * 7));
+      const last = groups.length >= 3 || c === 180;
+      groups.push({ cadence_days: c, rows: last ? rest : rest.filter((u) => u.packDays <= c * 2.5) });
+      rest = last ? [] : rest.filter((u) => u.packDays > c * 2.5);
+    }
+    const nonEmpty = groups.filter((g) => g.rows.length);
+    const plan = nonEmpty.map((g) => {
       const items = g.rows.map(({ prod, perDay }) => {
         const perPack = baseUnitsPerPack(prod);
-        const quantity = Math.max(1, Math.round((perDay * g.cadence_days) / perPack));
+        // Round up: a delivery that runs out before the next one is worse than a
+        // few spare rolls. Only a shortfall under 10% rounds down.
+        const quantity = Math.max(1, Math.ceil((perDay * g.cadence_days) / perPack - 0.1));
         return {
           sku: prod.sku, name: prod.name, quantity,
           days_of_supply: perDay > 0 ? Math.round((quantity * perPack) / perDay) : null,
@@ -778,7 +788,7 @@ export class Store {
       items: main.items,
       per_delivery: main.per_delivery,
       next_step: plan.length > 1
-        ? `Create one subscription per entry in plan, each with its own items and cadence_days (create_subscription / POST /v1/subscriptions). Items in the second entry last ${slowCadence} days or more per delivery, so sending them every ${cadence_days} days would pile them up.`
+        ? `Create one subscription per entry in plan, each with its own items and cadence_days (create_subscription / POST /v1/subscriptions). Later entries hold items that last much longer, so sending them every ${main.cadence_days} days would pile them up.`
         : 'Pass items and cadence_days to create_subscription (POST /v1/subscriptions).',
     };
   }
