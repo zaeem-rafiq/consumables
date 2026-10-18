@@ -54,3 +54,16 @@ test('skipping one item leaves it out of the next delivery only', async () => {
   assert.deepEqual(orders[0].lines.map((l) => l.sku), ['TP-2PLY-30']);
   assert.deepEqual(orders[1].lines.map((l) => l.sku).sort(), ['PT-2PLY-12', 'TP-2PLY-30']);
 });
+
+test('Shopify import file lists every product as an unpublished draft at catalog prices', async () => {
+  const { execFileSync } = await import('node:child_process');
+  const { PRODUCTS } = await import('../src/catalog.js');
+  const csv = execFileSync(process.execPath, ['--no-warnings', 'scripts/shopify-csv.js'], { encoding: 'utf8' });
+  const [header, ...rows] = csv.trim().split('\n');
+  const cols = header.split(',');
+  assert.equal(rows.length, PRODUCTS.length);
+  for (const name of ['Title', 'URL handle', 'Status', 'SKU', 'Price', 'Published on online store']) assert.ok(cols.includes(name), name);
+  const tp = rows.find((r) => r.includes(',TP-2PLY-30,'));
+  assert.match(tp, /,false,draft,TP-2PLY-30,/);
+  assert.ok(tp.includes(`,${(PRODUCTS.find((p) => p.sku === 'TP-2PLY-30').price_cents / 100).toFixed(2)},`));
+});
