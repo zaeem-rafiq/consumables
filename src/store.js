@@ -1244,7 +1244,7 @@ export class Store {
 
   #presentCase(c) {
     const proof = c.needs_proof
-      ? (c.kind === 'damaged' ? ' Because of the amount or recent claims, we need a photo first: pass photo_url or reply to our email with one.' : ' Because of the amount or recent claims, we check the carrier\'s delivery record first.')
+      ? (c.kind === 'damaged' ? ' Because of the amount or recent claims, we need a photo first: pass photo_url or reply to our email with one.' : c.kind === 'never_arrived' ? ' Because of the amount or recent claims, we check the carrier\'s delivery record first, usually within one business day, and then refund or resend it.' : ' Because of the amount or recent claims, we check the carrier\'s delivery record first.')
       : '';
     const next = {
       never_arrived: "Packages often turn up within a day at a neighbor's door or in the mailbox. If it still hasn't, we refund or resend it, the household's choice.",
