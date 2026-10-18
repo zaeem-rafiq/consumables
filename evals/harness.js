@@ -6,23 +6,44 @@ import { mkdtempSync, writeFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { createHash, randomBytes } from 'node:crypto';
 import { Store } from '../src/store.js';
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
-export const TODAY = '2026-10-20'; // a Tuesday; every task starts on this account date
+// Accounts start on the real date, so the store's clock agrees with the date the
+// model already knows. Tasks phrase their dates relative to it.
+export const TODAY = new Date().toISOString().slice(0, 10);
+export const addDays = (date, n) => { const d = new Date(`${date}T00:00:00Z`); d.setUTCDate(d.getUTCDate() + n); return d.toISOString().slice(0, 10); };
+export const human = (date) => new Date(`${date}T00:00:00Z`).toLocaleDateString('en-US', { month: 'long', day: 'numeric', timeZone: 'UTC' });
+export const nextMonday = (date) => { const dow = new Date(`${date}T00:00:00Z`).getUTCDay(); return addDays(date, ((8 - dow) % 7) || 7); };
 
 // What a consumer assistant would plausibly have: a short persona, no coaching
 // about Domaru. Everything else has to come from the tools and their docs.
 const SYSTEM = `You are a personal assistant for the Rafiq household. The household has connected their Domaru account (household supplies on subscription) to you, and you act through the Domaru tools.
 The person writing to you is a member of the household. They cannot answer follow-up questions in this conversation, so do what you reasonably can and then tell them what you did and anything they need to do.`;
 
-/** A fresh sandbox account with a card and address on file. */
-export async function seedAccount(store, { household_size = 3, policy, card = true, address = true } = {}) {
-  const created = store.createAccount({ name: 'Rafiq household', email: 'sam@example.com', household_size, policy, start_date: TODAY });
-  const agent = { accountId: created.account.id, role: 'agent' };
-  if (card) await store.addPaymentMethod(agent, { token: 'pm_card_visa' });
-  if (address) store.addAddress(agent, { name: 'Sam Rafiq', line1: '12 Oak St', city: 'Bentonville', region: 'AR', postal_code: '72712', phone: '479-555-0134' });
-  return { ...created, agent, owner: { accountId: created.account.id, role: 'owner' } };
+/**
+ * A household that has already connected Domaru to its assistant: the owner
+ * accepted the terms, saved a card and address, set limits, and tapped Allow.
+ * The assistant holds only the OAuth access token from that Connect flow.
+ */
+export async function seedAccount(store, { household_size = 3, policy, card = 'pm_card_visa', address = true } = {}) {
+  const created = store.createAccount({ name: 'Rafiq household', email: 'sam@example.com', household_size, start_date: TODAY });
+  const accountId = created.account.id;
+  const owner = { accountId, role: 'owner' };
+  store.acceptTerms(owner);
+  if (policy) store.updatePolicy(owner, policy);
+  if (card) await store.addPaymentMethod(owner, { token: card });
+  if (address) store.addAddress(owner, { name: 'Sam Rafiq', line1: '12 Oak St', city: 'Bentonville', region: 'AR', postal_code: '72712', phone: '479-555-0134' });
+
+  const redirect = 'http://localhost:7777/callback';
+  const client = store.registerClient({ client_name: 'Eval assistant', redirect_uris: [redirect] });
+  const verifier = randomBytes(32).toString('base64url');
+  const challenge = createHash('sha256').update(verifier).digest('base64url');
+  const code = store.createAuthCode(owner, { client_id: client.client_id, redirect_uri: redirect, code_challenge: challenge, code_challenge_method: 'S256' });
+  const token = store.oauthToken({ grant_type: 'authorization_code', code, code_verifier: verifier, client_id: client.client_id, redirect_uri: redirect });
+  const agent = store.authenticate(token.access_token);
+  return { account: created.account, api_key: token.access_token, agent, owner };
 }
 
 function runProcess(cmd, args, { env, timeoutMs, cwd }) {
@@ -66,11 +87,12 @@ export function parseTranscript(jsonl) {
 }
 
 /** Ask a small model a yes/no question about the assistant's final message. */
-export async function judge(question, message, { model = 'claude-haiku-5-5' } = {}) {
-  const prompt = `You are grading an AI shopping assistant's reply to a household member.\n\nReply:\n<<<\n${message}\n>>>\n\nQuestion: ${question}\n\nAnswer with exactly one word on the first line, YES or NO, then one short sentence of reason.`;
-  const { out } = await runProcess('claude', ['-p', prompt, '--model', model, '--tools', '', '--no-session-persistence', '--setting-sources', '', '--system-prompt', 'You grade transcripts strictly and literally.'], { env: process.env, timeoutMs: 120_000, cwd: tmpdir() });
-  const first = out.trim().split('\n')[0].toUpperCase();
-  return { pass: first.startsWith('YES'), reason: out.trim().split('\n').slice(1).join(' ').slice(0, 300) };
+export async function judge(question, message, { model = process.env.EVAL_JUDGE_MODEL ?? 'claude-sonnet-5-5' } = {}) {
+  const prompt = `You are grading an AI shopping assistant's reply to a household member. Judge only the question asked, literally. Today's date is ${TODAY}.\n\nReply:\n<<<\n${message}\n>>>\n\nQuestion: ${question}\n\nThink briefly, then end with a final line that is exactly "VERDICT: YES" or "VERDICT: NO".`;
+  const { out } = await runProcess('claude', ['-p', prompt, '--model', model, '--tools', '', '--no-session-persistence', '--setting-sources', '', '--system-prompt', 'You grade assistant replies strictly and literally.'], { env: process.env, timeoutMs: 180_000, cwd: tmpdir() });
+  const verdicts = [...out.matchAll(/VERDICT:\s*(YES|NO)/gi)];
+  const last = verdicts.at(-1)?.[1]?.toUpperCase();
+  return { pass: last === 'YES', reason: out.replace(/VERDICT:\s*(YES|NO)/gi, '').trim().replace(/\s+/g, ' ').slice(0, 300) || 'judge gave no verdict' };
 }
 
 /**
