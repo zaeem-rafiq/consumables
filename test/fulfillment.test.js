@@ -1,0 +1,118 @@
+import { test } from 'node:test';
+import assert from 'node:assert/strict';
+import { Store } from '../src/store.js';
+import { startServer } from '../src/http.js';
+import { ADDRESS } from './helpers.js';
+
+async function conciergeStore(opts = {}) {
+  const store = new Store({ fulfillment: 'manual', ...opts });
+  const { api_key } = store.createAccount({ name: 'Concierge home', email: 'home@example.com', start_date: opts.mode === 'live' ? undefined : '2026-01-05' });
+  const agent = store.authenticate(api_key);
+  await store.addPaymentMethod(agent, { token: 'pm_card_visa' });
+  store.addAddress({ ...agent, role: 'owner' }, ADDRESS);
+  return { store, agent };
+}
+
+test('paid orders wait for the operator instead of shipping themselves', async () => {
+  const { store, agent } = await conciergeStore();
+  const sub = await store.createSubscription(agent, { items: [{ sku: 'TP-2PLY-30', quantity: 2 }] });
+  const order = sub.latest_order;
+  assert.equal(order.shipment.status, 'awaiting_fulfillment');
+  assert.equal(order.shipment.tracking_number, null);
+
+  await store.advanceClock(agent, { days: 5 });
+  assert.equal(store.getOrder(agent, order.id).shipment.status, 'awaiting_fulfillment');
+
+  const [queued] = store.listFulfillmentQueue();
+  assert.equal(queued.id, order.id);
+  assert.equal(queued.ship_to.postal_code, ADDRESS.postal_code);
+  assert.equal(queued.lines[0].quantity, 2);
+  assert.match(queued.lines[0].source.url, /^https:\/\/www\.walmart\.com\/ip\//);
+  assert.equal(store.getOrder(agent, order.id).lines[0].source, undefined, 'agents never see where we buy');
+
+  assert.throws(() => store.markShipped(order.id, { carrier: 'UPS' }), (e) => e.code === 'missing_param');
+  assert.throws(() => store.markDelivered(order.id), (e) => e.code === 'invalid_shipment_state');
+  const shipped = store.markShipped(order.id, { carrier: 'UPS', tracking_number: '1Z999' });
+  assert.equal(shipped.shipment.status, 'shipped');
+  assert.equal(store.markDelivered(order.id).shipment.status, 'delivered');
+  assert.equal(store.listFulfillmentQueue().length, 0);
+
+  const types = store.listEvents(agent, { limit: 1000 }).data.map((e) => e.type);
+  assert.ok(types.includes('shipment.shipped') && types.includes('shipment.delivered'));
+});
+
+test('operator page: password sign-in with a cookie, lists orders, ships and delivers via forms', async () => {
+  const { store, agent } = await conciergeStore();
+  const sub = await store.createSubscription(agent, { items: [{ sku: 'PT-2PLY-12' }] });
+  const orderId = sub.latest_order.id;
+  const server = await startServer(store, { port: 0, host: '127.0.0.1', adminKey: 'secret' });
+  const base = `http://127.0.0.1:${server.address().port}`;
+  const form = { method: 'POST', redirect: 'manual', headers: { 'content-type': 'application/x-www-form-urlencoded' } };
+  try {
+    assert.match(await (await fetch(`${base}/admin`)).text(), /Operator sign-in/);
+    // The password in the link no longer signs anyone in.
+    assert.doesNotMatch(await (await fetch(`${base}/admin?key=secret`)).text(), /Concierge home/);
+    assert.equal((await fetch(`${base}/admin/login`, { ...form, body: 'key=wrong' })).status, 401);
+    const login = await fetch(`${base}/admin/login`, { ...form, body: 'key=secret' });
+    assert.equal(login.status, 303);
+    const setCookie = login.headers.get('set-cookie');
+    assert.match(setCookie, /HttpOnly/);
+    assert.match(setCookie, /SameSite=Strict/);
+    const jar = { cookie: setCookie.split(';')[0] };
+
+    const html = await (await fetch(`${base}/admin`, { headers: jar })).text();
+    assert.match(html, /walmart\.com\/ip\/15106305176/);
+    assert.match(html, /Great Value Everyday Strong Paper Towels/);
+    assert.match(html, /Concierge home/);
+    assert.match(html, /10001/);
+    assert.doesNotMatch(html, /secret/, 'the password is never written into the page');
+
+    const ship = await fetch(`${base}/admin/orders/${orderId}/ship`, { ...form, headers: { ...form.headers, ...jar }, body: 'carrier=USPS&tracking_number=9400' });
+    assert.equal(ship.status, 303);
+    assert.equal(store.getOrder(agent, orderId).shipment.tracking_number, '9400');
+    const deliver = await fetch(`${base}/admin/orders/${orderId}/deliver`, { ...form, headers: { ...form.headers, ...jar }, body: '' });
+    assert.equal(deliver.status, 303);
+    assert.equal(store.getOrder(agent, orderId).shipment.status, 'delivered');
+    const again = await fetch(`${base}/admin/orders/${orderId}/deliver`, { ...form, headers: { ...form.headers, ...jar }, body: '' });
+    assert.equal(again.status, 409);
+    // Scripts can use the password as a bearer header instead of a cookie.
+    const json = await fetch(`${base}/admin/orders.json?status=delivered`, { headers: { authorization: 'Bearer secret' } });
+    assert.equal((await json.json()).data.length, 1);
+  } finally {
+    server.close();
+  }
+});
+
+test('operator sign-in locks out after repeated wrong passwords', async () => {
+  const server = await startServer(new Store(), { port: 0, host: '127.0.0.1', adminKey: 'secret' });
+  const url = `http://127.0.0.1:${server.address().port}/admin/login`;
+  const form = { method: 'POST', redirect: 'manual', headers: { 'content-type': 'application/x-www-form-urlencoded' } };
+  try {
+    for (let i = 0; i < 10; i++) assert.equal((await fetch(url, { ...form, body: 'key=nope' })).status, 401);
+    assert.equal((await fetch(url, { ...form, body: 'key=secret' })).status, 429, 'even the right password waits out the lockout');
+  } finally {
+    server.close();
+  }
+});
+
+test('admin pages are off without an admin key', async () => {
+  const server = await startServer(new Store(), { port: 0, host: '127.0.0.1' });
+  try {
+    assert.equal((await fetch(`http://127.0.0.1:${server.address().port}/admin`)).status, 404);
+  } finally {
+    server.close();
+  }
+});
+
+test('live mode runs on the real clock and renews once even if runs overlap', async () => {
+  const { store, agent } = await conciergeStore({ mode: 'live' });
+  const today = new Date().toISOString().slice(0, 10);
+  assert.equal(store.getAccount(agent.accountId).today, today);
+  await assert.rejects(() => store.advanceClock(agent, { days: 1 }), (e) => e.status === 403);
+
+  const sub = await store.createSubscription(agent, { items: [{ sku: 'TP-2PLY-30' }], start_date: undefined });
+  assert.equal(store.listOrders(agent, { subscription_id: sub.id }).length, 1);
+  store.db.prepare('UPDATE subscriptions SET next_order_date = ? WHERE id = ?').run(today, sub.id);
+  await Promise.all([store.runAllDue(), store.runAllDue()]);
+  assert.equal(store.listOrders(agent, { subscription_id: sub.id }).length, 2);
+});
