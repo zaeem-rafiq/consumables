@@ -230,6 +230,10 @@ export function createApp(store, { baseUrl, adminKey, stripeWebhookSecret } = {}
       const route = methodMatches.find((r) => r.method === req.method);
       if (!route) {
         if (methodMatches.length) throw new ApiError(405, 'method_not_allowed', `${req.method} is not supported on ${url.pathname}.`, { hint: `Allowed: ${methodMatches.map((r) => r.method).join(', ')}.` });
+        // A person who mistyped a link gets a page, not JSON.
+        if (req.method === 'GET' && !url.pathname.startsWith('/v1/') && (req.headers.accept ?? '').includes('text/html')) {
+          return send(res, 404, messagePage('Page not found', "There's nothing at this address. If you followed a link from an email, it may be old.", { action: { href: '/', label: 'Go to Domaru' } }), 'text/html; charset=utf-8');
+        }
         throw new ApiError(404, 'route_not_found', `No route ${req.method} ${url.pathname}.`, { hint: `See ${base}/llms.txt for all endpoints.` });
       }
       const m = route.re.exec(url.pathname);

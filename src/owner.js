@@ -149,9 +149,13 @@ export function approvalPage({ info, token }) {
   const { approval, account } = info;
   const pending = approval.status === 'pending';
   const actions = decideButtons(() => `/owner/approvals/${esc(approval.id)}/decide`, (decision) => hidden({ t: token, decision }), approval.amount_cents);
-  return layout(pending ? 'Approve this order?' : 'Order request', `<div class="stack">
-    <h1 class="title">${pending ? 'Approve this order?' : 'Order request'}</h1>
-    <p class="lede">${pending ? 'Your assistant wants to order these supplies. They are outside the limits you set, so they wait for you.' : 'A request from your assistant.'}</p>
+  const [title, lede] = pending ? ['Approve this order?', 'Your assistant wants to order these supplies. They are outside the limits you set, so they wait for you.']
+    : approval.status === 'approved' ? ['Order approved', 'Your assistant can see that you said yes.']
+    : approval.status === 'rejected' ? ['Order declined', "Your assistant can see that you said no, and won't place it again."]
+    : ['Order request', 'A request from your assistant.'];
+  return layout(title, `<div class="stack">
+    <h1 class="title">${title}</h1>
+    <p class="lede">${lede}</p>
     ${approvalCard(info, actions)}
     <p class="small muted">Want different limits? <a href="/owner">Sign in to your account</a> to change them.</p>
   </div>`, { robots: false });

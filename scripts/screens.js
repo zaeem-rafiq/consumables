@@ -122,7 +122,7 @@ for (const e of store.listEmails({ limit: 200 })) if (!kinds.has(e.kind)) kinds.
 for (const [device, viewport] of [['desktop', { width: 900, height: 900 }], ['phone', { width: 390, height: 844 }]]) {
   const page = await browser.newPage({ viewport, deviceScaleFactor: device === 'phone' ? 2 : 1 });
   for (const [kind, e] of kinds) {
-    await page.setContent(renderEmail(e));
+    await page.setContent(renderEmail(e, { base }), { waitUntil: 'networkidle' });
     await page.screenshot({ path: join(out, 'emails', `${kind}-${device}.png`), fullPage: true });
   }
   await page.close();

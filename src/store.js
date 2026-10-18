@@ -74,6 +74,20 @@ const okRedirect = (u) => {
 const isEmail = (s) => typeof s === 'string' && /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(s) && s.length <= 254;
 const BANK_OFFER = `Switch to bank payments and save ${PRICING.bank_discount_pct}% on every delivery.`;
 
+/** "Thursday, October 22" for a YYYY-MM-DD date, as people read it in email. */
+const longDate = (d) => new Date(`${d}T12:00:00Z`).toLocaleDateString('en-US', { weekday: 'long', month: 'long', day: 'numeric', timeZone: 'UTC' });
+
+/** The carrier's own tracking page, when we know it. */
+function trackingUrl(carrier, number) {
+  const n = encodeURIComponent(number);
+  return {
+    ups: `https://www.ups.com/track?tracknum=${n}`,
+    fedex: `https://www.fedex.com/fedextrack/?trknbr=${n}`,
+    usps: `https://tools.usps.com/go/TrackConfirmAction?tLabels=${n}`,
+    ontrac: `https://www.ontrac.com/tracking/?number=${n}`,
+  }[String(carrier).toLowerCase()] ?? null;
+}
+
 export class Store {
   /**
    * @param {object} opts
@@ -1381,7 +1395,7 @@ export class Store {
       `Your assistant started a subscription for ${account.name}. It renews automatically every ${cadence_days} days until you or your assistant cancel it.`,
       '',
       ...priced.lines.map((l) => `${l.quantity} x ${l.name}  ${usd(l.line_total_cents)}`),
-      `Each delivery: about ${usd(priced.amounts.total_cents)} including tax and shipping. First delivery ships ${start_date ?? today}.`,
+      `Each delivery: about ${usd(priced.amounts.total_cents)} including tax and shipping. First delivery ships ${longDate(start_date ?? today)}.`,
       '',
       `To pause, skip or cancel, ask your assistant, or write to ${this.support.email} and we'll do it for you. Prices can change; we'll email you at least 7 days before any increase.`,
     ]);
@@ -1785,7 +1799,8 @@ export class Store {
     this.#emit(sh.account_id, 'shipment.shipped', { shipment_id: sh.id, order_id: orderId, carrier, tracking_number });
     const a = this.#account(sh.account_id);
     this.#mail(a, 'shipped', a.email, 'Your Domaru order is on the way', [
-      `Order ${orderId} has shipped with ${carrier}. Tracking: ${tracking_number}.`,
+      `Order ${orderId} has shipped with ${carrier}. Tracking number: ${tracking_number}.`,
+      ...(trackingUrl(carrier, tracking_number) ? [trackingUrl(carrier, tracking_number), ''] : []),
       'The box may come from Walmart or Amazon; we buy from them and ship straight to you.',
       `Problem with it? Tell your assistant, or reply to this email.`,
     ]);
@@ -1821,7 +1836,7 @@ export class Store {
         for (const e of this.db.prepare("SELECT * FROM emails WHERE status = 'queued' ORDER BY rowid").all()) {
           let r;
           try {
-            r = await this.mailer.send({ id: e.id, from: this.support.from, replyTo: this.support.email, to: e.to_addr, subject: e.subject, text: e.body, html: renderEmail(e) });
+            r = await this.mailer.send({ id: e.id, from: this.support.from, replyTo: this.support.email, to: e.to_addr, subject: e.subject, text: e.body, html: renderEmail(e, { base: this.publicUrl }) });
           } catch (err) {
             r = { status: 'failed', error: err.message };
           }
