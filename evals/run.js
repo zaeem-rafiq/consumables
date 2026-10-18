@@ -4,6 +4,7 @@
 //   node evals/run.js                                   # every task, sonnet + haiku, 3 trials
 //   node evals/run.js --models claude-haiku-5-5 --trials 1 --tasks held-order,vacation
 //   node evals/run.js --label "clearer approval errors"  # adds a row to evals/SCORES.md
+//   node evals/run.js --surface rest                     # same tasks, but through curl and the REST API
 //
 // Needs the Claude Code CLI (`claude`) signed in. Each run uses a fresh
 // sandbox store, so nothing real is ever ordered or charged.
@@ -24,6 +25,7 @@ const trials = Number(opt('trials', '3'));
 const concurrency = Number(opt('concurrency', '6'));
 const label = opt('label', '');
 const only = opt('tasks', '');
+const surface = opt('surface', 'mcp'); // mcp, or rest (curl + the HTTP API only)
 const tasks = only ? TASKS.filter((t) => only.split(',').includes(t.id)) : TASKS;
 if (!tasks.length) throw new Error(`No tasks match ${only}. Known: ${TASKS.map((t) => t.id).join(', ')}`);
 
@@ -35,7 +37,7 @@ let next = 0; let done = 0;
 async function worker() {
   while (next < jobs.length) {
     const job = jobs[next++];
-    const r = await runTask(job.task, { model: job.model });
+    const r = await runTask(job.task, { model: job.model, surface });
     r.trial = job.trial;
     results.push(r);
     done++;
@@ -65,7 +67,7 @@ for (const model of models) {
 
 mkdirSync(join(HERE, 'results'), { recursive: true });
 const file = join(HERE, 'results', `${stamp}.json`);
-writeFileSync(file, JSON.stringify({ label, commit, trials, models, summary, results }, null, 2));
+writeFileSync(file, JSON.stringify({ label, commit, surface, trials, models, summary, results }, null, 2));
 
 console.log('\nModel                     tasks passed   checks passed');
 for (const [m, s] of Object.entries(summary)) console.log(`${m.padEnd(26)}${(s.task_pass_rate * 100).toFixed(0).padStart(5)}%${(s.check_score * 100).toFixed(0).padStart(15)}%`);
@@ -77,6 +79,6 @@ if (label && !only) {
   const log = join(HERE, 'SCORES.md');
   if (!existsSync(log)) appendFileSync(log, '# Eval score log\n\nOne row per full run. "Tasks" is the share of task runs where every check passed; "checks" is the share of individual checks passed.\n\n| Date | Commit | Change | Model | Trials | Tasks | Checks |\n|---|---|---|---|---|---|---|\n');
   for (const [m, s] of Object.entries(summary)) {
-    appendFileSync(log, `| ${new Date().toISOString().slice(0, 10)} | ${commit} | ${label} | ${m} | ${trials} | ${(s.task_pass_rate * 100).toFixed(0)}% | ${(s.check_score * 100).toFixed(0)}% |\n`);
+    appendFileSync(log, `| ${new Date().toISOString().slice(0, 10)} | ${commit} | ${label}${surface === 'rest' ? ' [REST]' : ''} | ${m} | ${trials} | ${(s.task_pass_rate * 100).toFixed(0)}% | ${(s.check_score * 100).toFixed(0)}% |\n`);
   }
 }

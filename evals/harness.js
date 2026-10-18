@@ -1,5 +1,6 @@
 // Runs one eval task: seed a fresh sandbox store, hand a real assistant model
-// only the Domaru MCP tools, let it work, then grade what actually happened.
+// only the Domaru MCP tools (or, with surface "rest", only curl and the REST
+// API), let it work, then grade what actually happened.
 
 import { spawn } from 'node:child_process';
 import { mkdtempSync, writeFileSync, rmSync } from 'node:fs';
@@ -8,6 +9,7 @@ import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { createHash, randomBytes } from 'node:crypto';
 import { Store } from '../src/store.js';
+import { startServer } from '../src/http.js';
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
 // Accounts start on the real date, so the store's clock agrees with the date the
@@ -99,23 +101,77 @@ export async function judge(question, message, { model = process.env.EVAL_JUDGE_
  * @param {object} task  { id, prompt, setup(store) -> ctx, grade({ store, ctx, transcript, judge }) -> checks[] }
  * @param {{ model: string, maxTurns?: number, timeoutMs?: number }} opts
  */
-export async function runTask(task, { model, maxTurns = 30, timeoutMs = 300_000 } = {}) {
+// REST calls are graded like the MCP tools they match.
+const REST_TOOLS = [
+  ['GET', /^\/v1\/categories$/, 'list_categories'], ['GET', /^\/v1\/products$/, 'search_products'], ['GET', /^\/v1\/products\/[^/]+$/, 'get_product'],
+  ['POST', /^\/v1\/recommendations$/, 'recommend_bundle'], ['GET', /^\/v1\/account$/, 'get_account'], ['PATCH', /^\/v1\/account$/, 'update_household'],
+  ['POST', /^\/v1\/payment_methods$/, 'add_payment_method'], ['POST', /^\/v1\/payment_methods\/setup_link$/, 'create_card_setup_link'],
+  ['GET', /^\/v1\/payment_methods$/, 'list_payment_methods'], ['POST', /^\/v1\/addresses$/, 'add_address'], ['GET', /^\/v1\/addresses$/, 'list_addresses'],
+  ['POST', /^\/v1\/quotes$/, 'quote'], ['POST', /^\/v1\/subscriptions$/, 'create_subscription'], ['GET', /^\/v1\/subscriptions$/, 'list_subscriptions'],
+  ['GET', /^\/v1\/subscriptions\/[^/]+$/, 'get_subscription'], ['PATCH', /^\/v1\/subscriptions\/[^/]+$/, 'update_subscription'],
+  ['POST', /\/pause$/, 'pause_subscription'], ['POST', /\/resume$/, 'resume_subscription'], ['POST', /\/skip$/, 'skip_next_delivery'], ['POST', /\/ship_now$/, 'ship_now'],
+  ['POST', /\/supply_signal$/, 'report_supply_level'], ['POST', /^\/v1\/subscriptions\/[^/]+\/cancel$/, 'cancel_subscription'],
+  ['POST', /^\/v1\/orders$/, 'place_order'], ['GET', /^\/v1\/orders$/, 'list_orders'], ['GET', /^\/v1\/orders\/[^/]+$/, 'get_order'],
+  ['POST', /^\/v1\/orders\/[^/]+\/cancel$/, 'cancel_order'], ['POST', /\/problems$/, 'report_problem'], ['GET', /^\/v1\/cases/, 'list_cases'],
+  ['GET', /^\/v1\/approvals$/, 'list_approvals'], ['POST', /^\/v1\/approvals\//, 'decide_approval'], ['GET', /^\/v1\/events$/, 'list_events'],
+  ['POST', /^\/v1\/test\/clock\/advance$/, 'advance_test_clock'],
+];
+
+/** Turn curl commands in a transcript into the MCP tool calls they correspond to. */
+export function restCalls(calls) {
+  const out = [];
+  for (const c of calls) {
+    const cmd = String(c.input?.command ?? '');
+    for (const m of cmd.matchAll(/curl\b[^|;&]*/g)) {
+      const part = m[0];
+      const url = /https?:\/\/[^\s'"]+/.exec(part)?.[0];
+      if (!url) continue;
+      const path = new URL(url).pathname;
+      const body = /(?:-d|--data(?:-raw)?)\s+(?:'([^']*)'|"((?:[^"\\]|\\.)*)")/.exec(part);
+      const method = (/-X\s*(\w+)/.exec(part)?.[1] ?? (body ? 'POST' : 'GET')).toUpperCase();
+      const tool = REST_TOOLS.find(([mm, re]) => mm === method && re.test(path))?.[2] ?? `${method} ${path}`;
+      let input = {};
+      try { input = body ? JSON.parse(body[1] ?? body[2].replace(/\\"/g, '"')) : Object.fromEntries(new URL(url).searchParams); } catch { /* not JSON */ }
+      out.push({ name: tool, input, result: c.result, isError: c.isError, command: part.slice(0, 600) });
+    }
+  }
+  return out;
+}
+
+const restSystem = (base, key) => `${SYSTEM}
+Domaru has no tools in this conversation. Use its HTTP API with curl: base URL ${base}, and send the header "Authorization: Bearer ${key}" on every request. Start by reading ${base}/llms.txt (the OpenAPI spec is at ${base}/openapi.json).`;
+
+export async function runTask(task, { model, maxTurns = 30, timeoutMs = 300_000, surface = 'mcp' } = {}) {
   const dir = mkdtempSync(join(tmpdir(), `domaru-eval-${task.id}-`));
   const dbPath = join(dir, 'store.db');
+  let server; let serverStore;
   try {
     const seedStore = new Store({ dbPath });
     const ctx = await task.setup(seedStore);
     seedStore.db.close();
 
-    const mcpConfig = { mcpServers: { domaru: { command: process.execPath, args: ['--no-warnings', join(ROOT, 'bin/mcp-stdio.js')], env: { DOMARU_DB: dbPath, DOMARU_API_KEY: ctx.api_key } } } };
-    writeFileSync(join(dir, 'mcp.json'), JSON.stringify(mcpConfig));
-    const args = ['-p', task.prompt, '--model', model, '--mcp-config', join(dir, 'mcp.json'), '--strict-mcp-config',
-      '--tools', '', '--allowedTools', 'mcp__domaru__*', '--system-prompt', SYSTEM, '--max-turns', String(maxTurns),
-      '--output-format', 'stream-json', '--verbose', '--no-session-persistence', '--setting-sources', ''];
+    let args;
+    if (surface === 'rest') {
+      serverStore = new Store({ dbPath });
+      server = await startServer(serverStore, { port: 0, host: '127.0.0.1' });
+      const base = `http://127.0.0.1:${server.address().port}`;
+      serverStore.publicUrl = base;
+      args = ['-p', task.prompt, '--model', model, '--tools', 'Bash', '--allowedTools', 'Bash(curl:*)', '--system-prompt', restSystem(base, ctx.api_key)];
+    } else {
+      const mcpConfig = { mcpServers: { domaru: { command: process.execPath, args: ['--no-warnings', join(ROOT, 'bin/mcp-stdio.js')], env: { DOMARU_DB: dbPath, DOMARU_API_KEY: ctx.api_key } } } };
+      writeFileSync(join(dir, 'mcp.json'), JSON.stringify(mcpConfig));
+      args = ['-p', task.prompt, '--model', model, '--mcp-config', join(dir, 'mcp.json'), '--strict-mcp-config', '--tools', '', '--allowedTools', 'mcp__domaru__*', '--system-prompt', SYSTEM];
+    }
+    args.push('--max-turns', String(maxTurns), '--output-format', 'stream-json', '--verbose', '--no-session-persistence', '--setting-sources', '');
     const started = Date.now();
     const proc = await runProcess('claude', args, { env: process.env, timeoutMs, cwd: dir });
     const transcript = parseTranscript(proc.out);
     transcript.wall_ms = Date.now() - started;
+    if (surface === 'rest') {
+      transcript.calls = restCalls(transcript.calls);
+      await new Promise((r) => server.close(r)); server = null;
+      serverStore.db.close(); serverStore = null;
+    }
 
     const store = new Store({ dbPath });
     let checks;
@@ -129,11 +185,13 @@ export async function runTask(task, { model, maxTurns = 30, timeoutMs = 300_000 
     store.db.close();
     const passed = checks.filter((c) => c.pass).length;
     return {
-      task: task.id, model, score: checks.length ? passed / checks.length : 0, pass: checks.every((c) => c.pass), checks,
-      calls: transcript.calls.map((c) => ({ name: c.name, input: c.input, isError: c.isError, result: c.isError ? c.result?.slice(0, 400) : undefined })),
+      task: task.id, model, surface, score: checks.length ? passed / checks.length : 0, pass: checks.every((c) => c.pass), checks,
+      calls: transcript.calls.map((c) => ({ name: c.name, input: c.input, isError: c.isError, ...(c.command ? { command: c.command } : {}), result: c.isError ? String(c.result ?? '').slice(0, 400) : undefined })),
       final: transcript.final, result: transcript.result, wall_ms: transcript.wall_ms, exit: proc.code,
     };
   } finally {
+    if (server) server.close();
+    if (serverStore) serverStore.db.close();
     rmSync(dir, { recursive: true, force: true });
   }
 }
