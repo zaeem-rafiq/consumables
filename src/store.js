@@ -6,10 +6,12 @@ import { createHash, randomBytes } from 'node:crypto';
 import { openDb } from './db.js';
 import { PRODUCTS, CATEGORIES, presentProduct, baseUnitsPerPack, monthlyUsage } from './catalog.js';
 import { ApiError, badRequest, notFound, unauthorized, forbidden, conflict } from './errors.js';
-import { MockPayments } from './payments.js';
+import { MockPayments, addBusinessDays, BANK_CLEARING_BUSINESS_DAYS } from './payments.js';
 
 export const PRICING = {
   subscription_discount_pct: 5,
+  // Bank debits cost us far less than cards, so bank payers get some of that back.
+  bank_discount_pct: 2,
   free_shipping_threshold_cents: 3500,
   shipping_cents: 599,
   tax_rate_pct: 8,
@@ -42,6 +44,7 @@ const addDays = (date, n) => {
 };
 const isDate = (s) => typeof s === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(s) && !Number.isNaN(Date.parse(s));
 const pct = (amount, rate) => Math.round((amount * rate) / 100);
+const BANK_OFFER = `Switch to bank payments and save ${PRICING.bank_discount_pct}% on every delivery.`;
 
 export class Store {
   /**
@@ -156,7 +159,25 @@ export class Store {
       fulfillment: this.fulfillment,
       default_payment_method_id: a.default_payment_method_id,
       default_address_id: a.default_address_id,
+      bank_payments: this.#bankStatus(a),
       created_at: a.created_at,
+    };
+  }
+
+  /** Bank payments open up once the first delivery has arrived. */
+  #bankStatus(a) {
+    const eligible = !!this.db.prepare("SELECT 1 FROM shipments WHERE account_id = ? AND status = 'delivered' LIMIT 1").get(a.id);
+    const pm = a.default_payment_method_id ? this.db.prepare('SELECT type FROM payment_methods WHERE id = ?').get(a.default_payment_method_id) : null;
+    const usingBank = pm?.type === 'bank';
+    const offer = eligible && !usingBank;
+    return {
+      eligible,
+      using_bank: usingBank,
+      discount_pct: PRICING.bank_discount_pct,
+      offer: offer ? BANK_OFFER : null,
+      next_step: offer
+        ? 'Call create_bank_setup_link (POST /v1/payment_methods/bank_setup_link) and send the url to the owner. They sign in to their bank; it becomes the default and their subscriptions switch to it.'
+        : eligible ? null : 'Available after the first delivery arrives.',
     };
   }
 
@@ -211,18 +232,33 @@ export class Store {
     const existing = this.db.prepare('SELECT * FROM payment_methods WHERE account_id = ? AND token = ?').get(a.id, card.ref);
     const pmId = existing?.id ?? id('pm');
     if (!existing) {
-      this.db.prepare('INSERT INTO payment_methods (id, account_id, token, brand, last4, created_at) VALUES (?, ?, ?, ?, ?, ?)')
-        .run(pmId, a.id, card.ref, card.brand, card.last4, a.clock);
-      this.#emit(a.id, 'payment_method.added', { payment_method_id: pmId, brand: card.brand, last4: card.last4 });
+      const type = card.type ?? 'card';
+      this.db.prepare('INSERT INTO payment_methods (id, account_id, token, type, brand, last4, mandate, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)')
+        .run(pmId, a.id, card.ref, type, card.brand, card.last4, card.mandate ?? null, a.clock);
+      this.#emit(a.id, 'payment_method.added', { payment_method_id: pmId, type, brand: card.brand, last4: card.last4 });
     }
     if (setDefault || !a.default_payment_method_id) this.db.prepare('UPDATE accounts SET default_payment_method_id = ? WHERE id = ?').run(pmId, a.id);
+    // Switching to bank is a household decision: their running subscriptions move with it.
+    if (setDefault && (card.type ?? 'card') === 'bank') {
+      for (const sub of this.db.prepare("SELECT id FROM subscriptions WHERE account_id = ? AND status IN ('active', 'paused') AND payment_method_id != ?").all(a.id, pmId)) {
+        this.#touch(a, sub.id, { payment_method_id: pmId });
+        this.#emit(a.id, 'subscription.updated', { subscription_id: sub.id, fields: ['payment_method_id'] });
+      }
+    }
     return this.#presentPm(this.db.prepare('SELECT * FROM payment_methods WHERE id = ?').get(pmId));
   }
 
-  /** Attach a card from a test token (pm_card_visa, ...). */
+  #requireBankEligible(a) {
+    if (!this.#bankStatus(a).eligible) {
+      throw conflict('bank_payments_not_available_yet', 'Bank payments open up after the first delivery arrives.', { hint: 'Pay by card for now; get_account shows bank_payments.offer once it is available.' });
+    }
+  }
+
+  /** Attach a card or bank account from a test token (pm_card_visa, pm_usBankAccount_success, ...). */
   async addPaymentMethod(auth, { token, set_default = true } = {}) {
     if (!token || typeof token !== 'string') throw badRequest('missing_param', 'token is required.', { param: 'token', hint: 'In test mode use pm_card_visa.' });
     const a = this.#account(auth.accountId);
+    if (token.startsWith('pm_usBankAccount')) this.#requireBankEligible(a);
     const card = await this.payments.attachToken(await this.#customer(a), token);
     return this.#savePm(a, card, set_default);
   }
@@ -235,6 +271,20 @@ export class Store {
     const a = this.#account(auth.accountId);
     const link = await this.payments.createSetupLink({ customerRef: await this.#customer(a), accountId: a.id });
     return { url: link.url, expires_at: link.expires_at, next_step: 'Send this link to the account owner. Once they save a card it becomes the default payment method; check with list_payment_methods.' };
+  }
+
+  /** A secure page where the human signs in to their bank to pay by bank. Send the URL to the account owner. */
+  async createBankSetupLink(auth) {
+    const a = this.#account(auth.accountId);
+    this.#requireBankEligible(a);
+    if (!this.payments.supportsSetupLinks) {
+      throw badRequest('setup_links_unavailable', 'Bank setup links need the Stripe payment provider.', { hint: 'In the sandbox, call add_payment_method with token pm_usBankAccount_success instead.' });
+    }
+    const link = await this.payments.createSetupLink({ customerRef: await this.#customer(a), accountId: a.id, type: 'bank' });
+    return {
+      url: link.url, expires_at: link.expires_at, offer: BANK_OFFER,
+      next_step: 'Send this link to the account owner. They sign in to their bank on a Stripe page; the account becomes the default and their subscriptions switch to it. Bank payments are charged a few business days before each delivery ships.',
+    };
   }
 
   /** Called when the human returns from the setup page. */
@@ -251,7 +301,7 @@ export class Store {
   }
 
   #presentPm(x) {
-    return { id: x.id, brand: x.brand, last4: x.last4, created_at: x.created_at };
+    return { id: x.id, type: x.type, brand: x.brand, last4: x.last4, created_at: x.created_at };
   }
 
   #pm(accountId, pmId) {
@@ -300,25 +350,30 @@ export class Store {
     return [...merged].map(([sku, quantity]) => ({ sku, quantity }));
   }
 
-  price(items, { subscription = false } = {}) {
+  price(items, { subscription = false, bank = false } = {}) {
     const lines = items.map(({ sku, quantity }) => {
       const prod = this.products.get(sku);
       return { sku, name: prod.name, category: prod.category, quantity, unit_price_cents: prod.price_cents, line_total_cents: prod.price_cents * quantity };
     });
     const subtotal = lines.reduce((s, l) => s + l.line_total_cents, 0);
     const discount = subscription ? pct(subtotal, PRICING.subscription_discount_pct) : 0;
-    const afterDiscount = subtotal - discount;
-    const shipping = afterDiscount >= PRICING.free_shipping_threshold_cents ? 0 : PRICING.shipping_cents;
+    const bankDiscount = bank ? pct(subtotal, PRICING.bank_discount_pct) : 0;
+    // Free shipping is judged before the bank discount, so switching to bank never adds shipping.
+    const shipping = subtotal - discount >= PRICING.free_shipping_threshold_cents ? 0 : PRICING.shipping_cents;
+    const afterDiscount = subtotal - discount - bankDiscount;
     const tax = pct(afterDiscount, PRICING.tax_rate_pct);
     return {
       lines,
-      amounts: { subtotal_cents: subtotal, discount_cents: discount, shipping_cents: shipping, tax_cents: tax, total_cents: afterDiscount + shipping + tax, currency: 'usd' },
+      amounts: {
+        subtotal_cents: subtotal, discount_cents: discount, bank_discount_cents: bankDiscount, shipping_cents: shipping, tax_cents: tax,
+        total_cents: afterDiscount + shipping + tax, currency: 'usd',
+      },
     };
   }
 
   #monthSpend(accountId, today) {
     const month = today.slice(0, 7);
-    const rows = this.db.prepare("SELECT amounts_json FROM orders WHERE account_id = ? AND status IN ('paid') AND substr(created_at, 1, 7) = ?").all(accountId, month);
+    const rows = this.db.prepare("SELECT amounts_json FROM orders WHERE account_id = ? AND status IN ('paid', 'payment_pending') AND substr(created_at, 1, 7) = ?").all(accountId, month);
     return rows.reduce((s, r) => s + p(r.amounts_json).total_cents, 0);
   }
 
@@ -342,10 +397,11 @@ export class Store {
     return reasons;
   }
 
-  quote(auth, { items, subscription = true, cadence_days }) {
+  quote(auth, { items, subscription = true, cadence_days, payment_method_id }) {
     const account = this.#account(auth.accountId);
     const norm = this.#normalizeItems(items);
-    const priced = this.price(norm, { subscription });
+    const pmId = payment_method_id ?? account.default_payment_method_id;
+    const priced = this.price(norm, { subscription, bank: pmId ? this.#pm(account.id, pmId).type === 'bank' : false });
     const reasons = this.#policyCheck(account, priced.lines, priced.amounts.total_cents);
     const out = {
       ...priced,
@@ -398,7 +454,7 @@ export class Store {
     const account = this.#account(auth.accountId);
     const norm = this.#normalizeItems(items);
     const { addrId, pmId } = this.#resolveShipPay(account, address_id, payment_method_id);
-    return this.#placeOrder(account, { items: norm, addrId, pmId, subscriptionId: null });
+    return this.#placeOrder(account, { items: norm, addrId, pmId, subscriptionId: null, fulfillOn: dateOf(account.clock) });
   }
 
   #resolveShipPay(account, addressId, pmId) {
@@ -411,12 +467,13 @@ export class Store {
     return { addrId, pmId: payId };
   }
 
-  async #placeOrder(account, { items, addrId, pmId, subscriptionId }) {
-    const priced = this.price(items, { subscription: !!subscriptionId });
+  /** fulfillOn: the day the order may ship. Bank debits are charged ahead of it so they clear first. */
+  async #placeOrder(account, { items, addrId, pmId, subscriptionId, fulfillOn }) {
+    const priced = this.price(items, { subscription: !!subscriptionId, bank: this.#pm(account.id, pmId).type === 'bank' });
     const orderId = id('ord');
     const now = account.clock;
-    this.db.prepare(`INSERT INTO orders (id, account_id, subscription_id, status, lines_json, amounts_json, address_id, payment_method_id, charges_json, created_at, updated_at)
-      VALUES (?, ?, ?, 'pending', ?, ?, ?, ?, '[]', ?, ?)`).run(orderId, account.id, subscriptionId, j(priced.lines), j(priced.amounts), addrId, pmId, now, now);
+    this.db.prepare(`INSERT INTO orders (id, account_id, subscription_id, status, lines_json, amounts_json, address_id, payment_method_id, charges_json, fulfill_on, created_at, updated_at)
+      VALUES (?, ?, ?, 'pending', ?, ?, ?, ?, '[]', ?, ?, ?)`).run(orderId, account.id, subscriptionId, j(priced.lines), j(priced.amounts), addrId, pmId, fulfillOn, now, now);
     const reasons = this.#policyCheck(account, priced.lines, priced.amounts.total_cents);
     if (reasons.length) {
       const apprId = id('appr');
@@ -436,28 +493,53 @@ export class Store {
     const amounts = p(order.amounts_json);
     const prior = p(order.charges_json);
     const result = await this.payments.charge({
-      amountCents: amounts.total_cents, customerRef: this.#account(account.id).provider_customer_id, pmRef: pm.token, orderId, attempt: prior.length + 1,
+      amountCents: amounts.total_cents, customerRef: this.#account(account.id).provider_customer_id, pmRef: pm.token, pmType: pm.type, mandate: pm.mandate,
+      orderId, attempt: prior.length + 1,
     });
     const charge = {
       id: id('ch'), amount_cents: amounts.total_cents, payment_method_id: pm.id, created_at: account.clock,
       status: result.status, failure_code: result.failure_code, provider_ref: result.ref,
     };
     const charges = [...prior, charge];
+    if (result.status === 'pending') {
+      this.db.prepare("UPDATE orders SET status = 'payment_pending', charges_json = ?, updated_at = ? WHERE id = ?").run(j(charges), account.clock, orderId);
+      this.#emit(account.id, 'order.payment_pending', { order_id: orderId, amount_cents: amounts.total_cents });
+      return false;
+    }
+    return this.#settle(account, orderId, charges, result);
+  }
+
+  /** Record a charge's final outcome. A paid order ships once its ship date arrives. */
+  #settle(account, orderId, charges, result) {
     if (result.status !== 'succeeded') {
       this.db.prepare("UPDATE orders SET status = 'payment_failed', charges_json = ?, updated_at = ? WHERE id = ?").run(j(charges), account.clock, orderId);
       this.#emit(account.id, 'order.payment_failed', { order_id: orderId, failure_code: result.failure_code });
       return false;
     }
     this.db.prepare("UPDATE orders SET status = 'paid', charges_json = ?, updated_at = ? WHERE id = ?").run(j(charges), account.clock, orderId);
+    this.#emit(account.id, 'order.paid', { order_id: orderId, amount_cents: charges.at(-1).amount_cents });
+    const o = this.db.prepare('SELECT fulfill_on FROM orders WHERE id = ?').get(orderId);
+    if (!o.fulfill_on || o.fulfill_on <= dateOf(account.clock)) this.#ship(account, orderId);
+    return true;
+  }
+
+  #ship(account, orderId) {
     const today = dateOf(account.clock);
     const shipId = id('shp');
     const mock = this.fulfillment === 'mock';
     this.db.prepare(`INSERT INTO shipments (id, order_id, account_id, status, carrier, tracking_number, created_at, estimated_delivery_date)
       VALUES (?, ?, ?, ?, ?, ?, ?, ?)`).run(shipId, orderId, account.id, mock ? 'processing' : 'awaiting_fulfillment',
       mock ? 'mock_ground' : '', mock ? `MOCK${randomBytes(6).toString('hex').toUpperCase()}` : '', account.clock, addDays(today, mock ? 3 : 5));
-    this.#emit(account.id, 'order.paid', { order_id: orderId, amount_cents: amounts.total_cents });
     this.#emit(account.id, 'shipment.created', { shipment_id: shipId, order_id: orderId });
-    return true;
+  }
+
+  /** After the first delivery arrives, offer the household a cheaper way to pay. */
+  #afterDelivery(accountId) {
+    const delivered = this.db.prepare("SELECT COUNT(*) AS n FROM shipments WHERE account_id = ? AND status = 'delivered'").get(accountId).n;
+    const status = this.#bankStatus(this.#account(accountId));
+    if (delivered === 1 && status.offer) {
+      this.#emit(accountId, 'payment.bank_offer', { discount_pct: PRICING.bank_discount_pct, message: BANK_OFFER, next_step: status.next_step });
+    }
   }
 
   getOrder(auth, orderId) {
@@ -488,6 +570,7 @@ export class Store {
       address_id: o.address_id,
       payment_method_id: o.payment_method_id,
       charges: p(o.charges_json),
+      ship_date: o.fulfill_on,
       approval: appr ? this.#presentApproval(appr) : null,
       shipment: s ? {
         id: s.id, status: s.status, carrier: s.carrier || null, tracking_number: s.tracking_number || null,
@@ -589,7 +672,8 @@ export class Store {
 
   #presentSub(s) {
     const items = p(s.items_json);
-    const priced = this.price(items, { subscription: true });
+    const bank = this.db.prepare('SELECT type FROM payment_methods WHERE id = ?').get(s.payment_method_id)?.type === 'bank';
+    const priced = this.price(items, { subscription: true, bank });
     const latest = this.db.prepare('SELECT * FROM orders WHERE subscription_id = ? ORDER BY created_at DESC, rowid DESC LIMIT 1').get(s.id);
     return {
       id: s.id,
@@ -598,6 +682,7 @@ export class Store {
       items: priced.lines.map(({ sku, name, quantity, unit_price_cents }) => ({ sku, name, quantity, unit_price_cents })),
       cadence_days: s.cadence_days,
       next_order_date: s.status === 'canceled' ? null : s.next_order_date,
+      next_charge_date: s.status === 'canceled' ? null : this.#chargeDate(s.next_order_date, bank),
       pause_until: s.pause_until,
       address_id: s.address_id,
       payment_method_id: s.payment_method_id,
@@ -641,7 +726,9 @@ export class Store {
 
     // A new card on a past-due subscription retries the failed order right away.
     if (s.status === 'past_due' && payment_method_id !== undefined && s.failed_order_id) {
-      this.db.prepare('UPDATE orders SET payment_method_id = ? WHERE id = ?').run(payment_method_id, s.failed_order_id);
+      const failed = this.db.prepare('SELECT lines_json FROM orders WHERE id = ?').get(s.failed_order_id);
+      const repriced = this.price(p(failed.lines_json), { subscription: true, bank: this.#pm(account.id, payment_method_id).type === 'bank' });
+      this.db.prepare('UPDATE orders SET payment_method_id = ?, amounts_json = ? WHERE id = ?').run(payment_method_id, j(repriced.amounts), s.failed_order_id);
       if (await this.#chargeAndFulfill(this.#account(account.id), s.failed_order_id)) this.#syncSubscriptionAfterPayment(this.#account(account.id), s.failed_order_id);
     }
     return this.getSubscription(auth, s.id);
@@ -738,13 +825,32 @@ export class Store {
       this.#resume(account, s);
     }
 
-    for (const s of this.db.prepare("SELECT * FROM subscriptions WHERE account_id = ? AND status = 'active' AND next_order_date <= ?").all(accountId, today)) {
+    // Bank debits started earlier: see whether they cleared or bounced.
+    for (const o of this.db.prepare("SELECT * FROM orders WHERE account_id = ? AND status = 'payment_pending' ORDER BY created_at, rowid").all(accountId)) {
+      const charges = p(o.charges_json);
+      const last = charges.at(-1);
+      const pm = this.#pm(accountId, last.payment_method_id);
+      const result = await this.payments.checkCharge({ ref: last.provider_ref, pmRef: pm.token, chargedOn: dateOf(last.created_at), today });
+      if (result.status === 'pending') continue;
+      charges[charges.length - 1] = { ...last, status: result.status, failure_code: result.failure_code, settled_at: account.clock };
+      this.#settle(account, o.id, charges, result);
+      this.#syncSubscriptionAfterPayment(this.#account(accountId), o.id);
+    }
+
+    const subs = this.db.prepare("SELECT s.*, pm.type AS pm_type FROM subscriptions s LEFT JOIN payment_methods pm ON pm.id = s.payment_method_id WHERE s.account_id = ? AND s.status = 'active'").all(accountId);
+    for (const s of subs.filter((x) => this.#chargeDate(x.next_order_date, x.pm_type === 'bank') <= today)) {
+      const shipOn = s.next_order_date < today ? today : s.next_order_date;
       // Claim this renewal before charging so overlapping runs never order twice.
       const claimed = this.db.prepare("UPDATE subscriptions SET next_order_date = ?, updated_at = ? WHERE id = ? AND status = 'active' AND next_order_date = ?")
-        .run(addDays(today, s.cadence_days), account.clock, s.id, s.next_order_date);
+        .run(addDays(shipOn, s.cadence_days), account.clock, s.id, s.next_order_date);
       if (claimed.changes !== 1) continue;
-      const order = await this.#placeOrder(account, { items: p(s.items_json), addrId: s.address_id, pmId: s.payment_method_id, subscriptionId: s.id });
+      const order = await this.#placeOrder(account, { items: p(s.items_json), addrId: s.address_id, pmId: s.payment_method_id, subscriptionId: s.id, fulfillOn: shipOn });
       this.#syncSubscriptionAfterPayment(this.#account(accountId), order.id);
+    }
+
+    // Paid ahead of time: ship once the ship date arrives.
+    for (const o of this.db.prepare("SELECT o.id FROM orders o LEFT JOIN shipments sh ON sh.order_id = o.id WHERE o.account_id = ? AND o.status = 'paid' AND sh.id IS NULL AND o.fulfill_on <= ?").all(accountId, today)) {
+      this.#ship(account, o.id);
     }
 
     if (this.fulfillment !== 'mock') return;
@@ -757,8 +863,14 @@ export class Store {
       if (sh.status === 'shipped' && sh.estimated_delivery_date <= today) {
         this.db.prepare("UPDATE shipments SET status = 'delivered', delivered_at = ? WHERE id = ?").run(account.clock, sh.id);
         this.#emit(accountId, 'shipment.delivered', { shipment_id: sh.id, order_id: sh.order_id });
+        this.#afterDelivery(accountId);
       }
     }
+  }
+
+  /** Bank payers are charged early enough for the debit to clear before the order is bought. */
+  #chargeDate(shipDate, bank) {
+    return bank ? addBusinessDays(shipDate, -BANK_CLEARING_BUSINESS_DAYS) : shipDate;
   }
 
   #syncSubscriptionAfterPayment(account, orderId) {
@@ -789,9 +901,11 @@ export class Store {
     return { account: this.getAccount(account.id), events: this.listEvents(auth, { after: before, limit: 1000 }).data };
   }
 
-  /** Live mode scheduler tick: run renewals for every live account. */
+  /** Live mode scheduler tick: renewals, bank debits and ship dates for every live account. */
   async runAllDue() {
-    const ids = this.db.prepare("SELECT DISTINCT account_id AS id FROM subscriptions s JOIN accounts a ON a.id = s.account_id WHERE a.mode = 'live' AND s.status IN ('active', 'paused')").all();
+    const ids = this.db.prepare(`SELECT id FROM accounts a WHERE a.mode = 'live' AND (
+      EXISTS (SELECT 1 FROM subscriptions s WHERE s.account_id = a.id AND s.status IN ('active', 'paused'))
+      OR EXISTS (SELECT 1 FROM orders o WHERE o.account_id = a.id AND o.status IN ('payment_pending', 'paid') AND NOT EXISTS (SELECT 1 FROM shipments sh WHERE sh.order_id = o.id)))`).all();
     for (const { id: accountId } of ids) await this.#runDue(accountId);
     return ids.length;
   }
@@ -834,6 +948,7 @@ export class Store {
     const sh = this.#operatorShipment(orderId, 'shipped');
     this.db.prepare("UPDATE shipments SET status = 'delivered', delivered_at = ? WHERE id = ?").run(this.#account(sh.account_id).clock, sh.id);
     this.#emit(sh.account_id, 'shipment.delivered', { shipment_id: sh.id, order_id: orderId });
+    this.#afterDelivery(sh.account_id);
     return this.#presentOrder(this.db.prepare('SELECT * FROM orders WHERE id = ?').get(orderId));
   }
 

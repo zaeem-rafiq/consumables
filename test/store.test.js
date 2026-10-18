@@ -19,12 +19,15 @@ test('catalog search and unknown sku hint', async () => {
 test('pricing: subscription discount, free shipping threshold, tax', async () => {
   const { store } = await setup();
   const small = await store.price([{ sku: 'NAP-500', quantity: 1 }], { subscription: false });
-  assert.deepEqual(small.amounts, { subtotal_cents: 599, discount_cents: 0, shipping_cents: 599, tax_cents: 48, total_cents: 1246, currency: 'usd' });
+  assert.deepEqual(small.amounts, { subtotal_cents: 599, discount_cents: 0, bank_discount_cents: 0, shipping_cents: 599, tax_cents: 48, total_cents: 1246, currency: 'usd' });
   const big = await store.price([TP, PT], { subscription: true });
   assert.equal(big.amounts.subtotal_cents, 4898);
   assert.equal(big.amounts.discount_cents, 245);
   assert.equal(big.amounts.shipping_cents, 0);
   assert.equal(big.amounts.total_cents, 4898 - 245 + 372);
+  const bank = await store.price([TP, PT], { subscription: true, bank: true });
+  assert.equal(bank.amounts.bank_discount_cents, 98);
+  assert.equal(bank.amounts.total_cents, 4898 - 245 - 98 + 364);
 });
 
 test('recommendations scale with household size', async () => {
@@ -45,7 +48,7 @@ test('subscription lifecycle: create ships today, renews on cadence, delivers', 
   assert.equal(sub.next_order_date, '2026-02-04');
 
   const { events } = await store.advanceClock(agent, { days: 3 });
-  assert.deepEqual(events.map((e) => e.type), ['shipment.shipped', 'shipment.delivered']);
+  assert.deepEqual(events.map((e) => e.type), ['shipment.shipped', 'shipment.delivered', 'payment.bank_offer']);
 
   await store.advanceClock(agent, { days: 27 });
   const orders = await store.listOrders(agent, { subscription_id: sub.id });
@@ -171,4 +174,89 @@ test('events feed is ordered and pageable', async () => {
   const rest = await store.listEvents(agent, { after: first.next_after });
   assert.ok(rest.data.every((e) => e.seq > first.next_after));
   assert.ok(rest.data.some((e) => e.type === 'order.paid'));
+});
+
+/** A card subscription whose first delivery has arrived, so bank payments are on offer. Clock ends on 2026-01-08. */
+async function afterFirstDelivery() {
+  const ctx = await setup();
+  const sub = await ctx.store.createSubscription(ctx.agent, { items: [TP, PT], cadence_days: 28 });
+  const { events } = await ctx.store.advanceClock(ctx.agent, { days: 3 });
+  return { ...ctx, sub, events, card: ctx.store.listPaymentMethods(ctx.agent)[0] };
+}
+
+test('bank payments open up after the first delivery, with 2% off', async () => {
+  const { store, agent } = await setup();
+  assert.deepEqual(store.getAccount(agent.accountId).bank_payments, {
+    eligible: false, using_bank: false, discount_pct: 2, offer: null, next_step: 'Available after the first delivery arrives.',
+  });
+  await assert.rejects(() => store.addPaymentMethod(agent, { token: 'pm_usBankAccount_success' }), (e) => e.code === 'bank_payments_not_available_yet');
+
+  const { store: s2, agent: a2, sub, events } = await afterFirstDelivery();
+  const offer = events.find((e) => e.type === 'payment.bank_offer');
+  assert.equal(offer.data.message, 'Switch to bank payments and save 2% on every delivery.');
+  assert.equal(s2.getAccount(a2.accountId).bank_payments.offer, offer.data.message);
+
+  const bank = await s2.addPaymentMethod(a2, { token: 'pm_usBankAccount_success' });
+  assert.equal(bank.type, 'bank');
+  const account = s2.getAccount(a2.accountId);
+  assert.equal(account.default_payment_method_id, bank.id);
+  assert.equal(account.bank_payments.offer, null);
+  const switched = s2.getSubscription(a2, sub.id);
+  assert.equal(switched.payment_method_id, bank.id, 'subscriptions move to the bank account');
+  assert.equal(switched.estimated_next_order.bank_discount_cents, 98);
+  assert.equal(switched.next_order_date, '2026-02-02');
+  assert.equal(switched.next_charge_date, '2026-01-27', '4 business days before the delivery');
+});
+
+test('bank payers are charged ahead and ship only once the money clears', async () => {
+  const { store, agent, sub } = await afterFirstDelivery();
+  await store.addPaymentMethod(agent, { token: 'pm_usBankAccount_success' });
+
+  await store.advanceClock(agent, { days: 18 }); // 2026-01-26
+  assert.equal(store.listOrders(agent, { subscription_id: sub.id }).length, 1, 'not charged early');
+
+  await store.advanceClock(agent, { days: 1 }); // 2026-01-27
+  let [order] = store.listOrders(agent, { subscription_id: sub.id });
+  assert.equal(store.listOrders(agent, { subscription_id: sub.id }).length, 2);
+  assert.equal(order.status, 'payment_pending');
+  assert.equal(order.ship_date, '2026-02-02');
+  assert.equal(order.shipment, null);
+  assert.equal(order.amounts.total_cents, 4898 - 245 - 98 + 364);
+  assert.equal(order.charges.length, 1, 'one charge per delivery');
+  const [, first] = store.listOrders(agent, { subscription_id: sub.id });
+  assert.equal(store.getAccount(agent.accountId).spend.spent_cents, first.amounts.total_cents + order.amounts.total_cents, 'pending debits count toward the monthly limit');
+  assert.equal(store.listFulfillmentQueue().length, 0);
+
+  await store.advanceClock(agent, { days: 5 }); // 2026-02-01, a Sunday: still clearing
+  [order] = store.listOrders(agent, { subscription_id: sub.id });
+  assert.equal(order.status, 'payment_pending');
+
+  const { events } = await store.advanceClock(agent, { days: 1 }); // 2026-02-02
+  [order] = store.listOrders(agent, { subscription_id: sub.id });
+  assert.equal(order.status, 'paid');
+  assert.equal(order.charges[0].status, 'succeeded');
+  assert.equal(order.shipment.status, 'processing');
+  assert.deepEqual(events.map((e) => e.type).slice(0, 2), ['order.paid', 'shipment.created']);
+  assert.equal(store.getSubscription(agent, sub.id).next_order_date, '2026-03-02');
+});
+
+test('a bounced bank payment is handled like a declined card', async () => {
+  const { store, agent, sub, card } = await afterFirstDelivery();
+  await store.addPaymentMethod(agent, { token: 'pm_usBankAccount_insufficientFunds' });
+  await store.advanceClock(agent, { days: 19 }); // charged 2026-01-27
+  const { events } = await store.advanceClock(agent, { days: 6 }); // bounces 2026-02-02
+  let [order] = store.listOrders(agent, { subscription_id: sub.id });
+  assert.equal(order.status, 'payment_failed');
+  assert.equal(order.charges[0].failure_code, 'insufficient_funds');
+  assert.equal(order.shipment, null, 'nothing is bought before the money clears');
+  assert.ok(events.some((e) => e.type === 'subscription.past_due'));
+  assert.equal(store.getSubscription(agent, sub.id).status, 'past_due');
+
+  const back = await store.updateSubscription(agent, sub.id, { payment_method_id: card.id });
+  assert.equal(back.status, 'active');
+  [order] = store.listOrders(agent, { subscription_id: sub.id });
+  assert.equal(order.status, 'paid');
+  assert.equal(order.amounts.bank_discount_cents, 0, 'the bank discount goes with the bank');
+  assert.equal(order.charges.length, 2);
+  assert.equal(order.shipment.status, 'processing', 'ships right away: its ship date has passed');
 });

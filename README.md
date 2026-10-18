@@ -22,6 +22,17 @@ Set `STRIPE_SECRET_KEY` to use real Stripe:
 - Every order is charged off-session with a Stripe PaymentIntent, using an idempotency key per order attempt so retries never double-charge. A declined charge puts the subscription in `past_due`.
 - With an `sk_test_` key, test tokens such as `pm_card_visa` also work. An `sk_live_` key switches accounts to live mode, which uses the real clock and a renewal scheduler that runs every 15 minutes. It also refuses test tokens.
 
+### Bank payments
+
+Cards are the default. People rarely hand over bank details before they've shopped with you, so bank payments open up only after a household's first delivery arrives:
+
+- The store emits `payment.bank_offer` and `get_account` shows `bank_payments.offer`: "Switch to bank payments and save 2% on every delivery."
+- The agent calls `create_bank_setup_link` (`POST /v1/payment_methods/bank_setup_link`). The owner signs in to their bank on Stripe's hosted page (US ACH via Financial Connections, which Stripe prices at 0.8% capped at $5). The bank account becomes the default and the household's subscriptions move to it.
+- Bank payers get `bank_discount_pct` (2%) off the subtotal on every order, shown as `bank_discount_cents`. Free shipping is judged before that discount, so switching never adds a shipping fee. Cards carry no surcharge.
+- A bank debit takes days to clear, so subscriptions paid by bank are charged 4 business days before the delivery date (`next_charge_date`). The order sits in `payment_pending` until the debit clears, and it only reaches the fulfillment queue once it is `paid` and its `ship_date` has arrived. Nothing is bought at Walmart before the money is in. Each delivery is still one charge.
+- A bounced debit (`insufficient_funds`, `account_closed`, ...) is treated like a declined card: the order is `payment_failed`, the subscription goes `past_due`, and setting a new payment method retries it.
+- Sandbox bank tokens: `pm_usBankAccount_success`, `pm_usBankAccount_insufficientFunds`, `pm_usBankAccount_accountClosed`. Mock debits clear or bounce after 4 business days on the account clock. Weekends are skipped; bank holidays are not modeled yet.
+
 ## Fulfillment
 
 - `FULFILLMENT=mock` (default): shipments go `processing → shipped → delivered` over 3 days on the account clock.
@@ -100,7 +111,7 @@ The full endpoint list is in `GET /llms.txt`.
 
 ## MCP tools
 
-`list_categories`, `search_products`, `get_product`, `recommend_bundle`, `quote`, `create_account`, `get_account`, `update_household`, `create_card_setup_link`, `add_payment_method`, `list_payment_methods`, `add_address`, `list_addresses`, `create_subscription`, `list_subscriptions`, `get_subscription`, `update_subscription`, `pause_subscription`, `resume_subscription`, `skip_next_delivery`, `ship_now`, `report_supply_level`, `cancel_subscription`, `place_order`, `list_orders`, `get_order`, `list_approvals`, `list_events`, `advance_test_clock`.
+`list_categories`, `search_products`, `get_product`, `recommend_bundle`, `quote`, `create_account`, `get_account`, `update_household`, `create_card_setup_link`, `create_bank_setup_link`, `add_payment_method`, `list_payment_methods`, `add_address`, `list_addresses`, `create_subscription`, `list_subscriptions`, `get_subscription`, `update_subscription`, `pause_subscription`, `resume_subscription`, `skip_next_delivery`, `ship_now`, `report_supply_level`, `cancel_subscription`, `place_order`, `list_orders`, `get_order`, `list_approvals`, `list_events`, `advance_test_clock`.
 
 ## Layout
 

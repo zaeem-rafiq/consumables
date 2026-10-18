@@ -20,8 +20,10 @@ CREATE TABLE IF NOT EXISTS payment_methods (
   id TEXT PRIMARY KEY,
   account_id TEXT NOT NULL,
   token TEXT NOT NULL,
+  type TEXT NOT NULL DEFAULT 'card',
   brand TEXT NOT NULL,
   last4 TEXT NOT NULL,
+  mandate TEXT,
   created_at TEXT NOT NULL
 );
 CREATE TABLE IF NOT EXISTS addresses (
@@ -58,6 +60,7 @@ CREATE TABLE IF NOT EXISTS orders (
   payment_method_id TEXT NOT NULL,
   charges_json TEXT NOT NULL,
   approval_id TEXT,
+  fulfill_on TEXT,
   created_at TEXT NOT NULL,
   updated_at TEXT NOT NULL
 );
@@ -118,5 +121,10 @@ export function openDb(path = ':memory:') {
   // Columns added after the first release.
   const cols = db.prepare('PRAGMA table_info(accounts)').all().map((c) => c.name);
   if (!cols.includes('provider_customer_id')) db.exec('ALTER TABLE accounts ADD COLUMN provider_customer_id TEXT');
+  const pmCols = db.prepare('PRAGMA table_info(payment_methods)').all().map((c) => c.name);
+  if (!pmCols.includes('type')) db.exec("ALTER TABLE payment_methods ADD COLUMN type TEXT NOT NULL DEFAULT 'card'");
+  if (!pmCols.includes('mandate')) db.exec('ALTER TABLE payment_methods ADD COLUMN mandate TEXT');
+  const orderCols = db.prepare('PRAGMA table_info(orders)').all().map((c) => c.name);
+  if (!orderCols.includes('fulfill_on')) db.exec('ALTER TABLE orders ADD COLUMN fulfill_on TEXT');
   return db;
 }

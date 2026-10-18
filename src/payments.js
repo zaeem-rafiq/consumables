@@ -5,6 +5,10 @@
 // - StripePayments: real Stripe over its REST API (no SDK). Cards are saved
 //   by the human through a Stripe Checkout "setup" link, or attached from
 //   Stripe test tokens in test mode, then charged off-session on each order.
+//
+// Bank payments (US ACH debits) are slower than cards: a charge starts as
+// 'pending' and only clears, or bounces, a few business days later. The store
+// polls checkCharge until it settles.
 
 import { ApiError, badRequest } from './errors.js';
 
@@ -14,6 +18,26 @@ const MOCK_CARDS = {
   pm_card_declined: { brand: 'visa', last4: '0002', fail: 'card_declined' },
   pm_card_insufficient_funds: { brand: 'visa', last4: '9995', fail: 'insufficient_funds' },
 };
+
+// Stripe's ACH test payment methods. A bounce shows up at settlement, not at charge time.
+const MOCK_BANKS = {
+  pm_usBankAccount_success: { brand: 'STRIPE TEST BANK', last4: '6789' },
+  pm_usBankAccount_insufficientFunds: { brand: 'STRIPE TEST BANK', last4: '6789', fail: 'insufficient_funds' },
+  pm_usBankAccount_accountClosed: { brand: 'STRIPE TEST BANK', last4: '6789', fail: 'account_closed' },
+};
+
+/** Business days a bank debit takes to clear. Weekends don't count; bank holidays are ignored. */
+export const BANK_CLEARING_BUSINESS_DAYS = 4;
+
+export function addBusinessDays(date, n) {
+  const d = new Date(`${date}T00:00:00Z`);
+  const step = n < 0 ? -1 : 1;
+  for (let left = Math.abs(n); left > 0;) {
+    d.setUTCDate(d.getUTCDate() + step);
+    if (d.getUTCDay() !== 0 && d.getUTCDay() !== 6) left--;
+  }
+  return d.toISOString().slice(0, 10);
+}
 
 export class MockPayments {
   name = 'mock';
@@ -25,17 +49,27 @@ export class MockPayments {
 
   async attachToken(_customerRef, token) {
     const card = MOCK_CARDS[token];
-    if (!card) {
+    const bank = MOCK_BANKS[token];
+    if (!card && !bank) {
       throw badRequest('invalid_payment_token', `Unknown payment token '${token}'.`, {
-        param: 'token', hint: `Sandbox tokens: ${Object.keys(MOCK_CARDS).join(', ')}.`,
+        param: 'token', hint: `Sandbox tokens: ${[...Object.keys(MOCK_CARDS), ...Object.keys(MOCK_BANKS)].join(', ')}.`,
       });
     }
-    return { ref: token, brand: card.brand, last4: card.last4 };
+    const x = card ?? bank;
+    return { ref: token, type: card ? 'card' : 'bank', brand: x.brand, last4: x.last4 };
   }
 
-  async charge({ pmRef }) {
+  async charge({ pmRef, orderId, attempt }) {
+    if (MOCK_BANKS[pmRef]) return { status: 'pending', failure_code: null, ref: `mock_ach_${orderId}_${attempt}` };
     const card = MOCK_CARDS[pmRef];
     return card?.fail ? { status: 'failed', failure_code: card.fail, ref: null } : { status: 'succeeded', failure_code: null, ref: null };
+  }
+
+  /** Mock bank debits settle after the clearing window, on the account's clock. */
+  async checkCharge({ pmRef, chargedOn, today }) {
+    if (today < addBusinessDays(chargedOn, BANK_CLEARING_BUSINESS_DAYS)) return { status: 'pending', failure_code: null };
+    const fail = MOCK_BANKS[pmRef]?.fail;
+    return fail ? { status: 'failed', failure_code: fail } : { status: 'succeeded', failure_code: null };
   }
 }
 
@@ -86,7 +120,7 @@ export class StripePayments {
     }
     try {
       const pm = await this.#request('POST', `/v1/payment_methods/${encodeURIComponent(token)}/attach`, { customer: customerRef });
-      return { ref: pm.id, brand: pm.card?.brand ?? 'card', last4: pm.card?.last4 ?? '????' };
+      return present(pm);
     } catch (err) {
       if (err.stripe?.status === 400 || err.stripe?.status === 404) {
         throw badRequest('invalid_payment_token', `Stripe rejected payment token '${token}'.`, { param: 'token', hint: 'Use a Stripe test token like pm_card_visa, or a card setup link.' });
@@ -95,13 +129,18 @@ export class StripePayments {
     }
   }
 
-  /** A Stripe-hosted page where the human saves a card. Nothing is charged. */
-  async createSetupLink({ customerRef, accountId }) {
+  /**
+   * A Stripe-hosted page where the human saves a card, or signs in to their
+   * bank to connect an account (type 'bank'). Nothing is charged.
+   */
+  async createSetupLink({ customerRef, accountId, type = 'card' }) {
+    const bank = type === 'bank';
     const s = await this.#request('POST', '/v1/checkout/sessions', {
       mode: 'setup',
       customer: customerRef,
       currency: 'usd',
-      payment_method_types: ['card'],
+      payment_method_types: [bank ? 'us_bank_account' : 'card'],
+      payment_method_options: bank ? { us_bank_account: { verification_method: 'instant', financial_connections: { permissions: ['payment_method'] } } } : undefined,
       client_reference_id: accountId,
       success_url: `${this.publicUrl}/setup/complete?session_id={CHECKOUT_SESSION_ID}`,
       cancel_url: `${this.publicUrl}/setup/canceled`,
@@ -109,28 +148,32 @@ export class StripePayments {
     return { id: s.id, url: s.url, expires_at: s.expires_at ? new Date(s.expires_at * 1000).toISOString() : null };
   }
 
-  /** Resolve a finished setup session to the card it saved. */
+  /** Resolve a finished setup session to the card or bank account it saved. */
   async completeSetup(sessionId) {
     const s = await this.#request('GET', `/v1/checkout/sessions/${encodeURIComponent(sessionId)}`, { expand: ['setup_intent.payment_method'] });
     if (s.status !== 'complete' || !s.setup_intent?.payment_method) return null;
-    const pm = s.setup_intent.payment_method;
-    return { accountId: s.client_reference_id, customerRef: s.customer, card: { ref: pm.id, brand: pm.card?.brand ?? 'card', last4: pm.card?.last4 ?? '????' } };
+    const mandate = typeof s.setup_intent.mandate === 'string' ? s.setup_intent.mandate : s.setup_intent.mandate?.id;
+    return { accountId: s.client_reference_id, customerRef: s.customer, card: { ...present(s.setup_intent.payment_method), mandate: mandate ?? null } };
   }
 
-  async charge({ amountCents, customerRef, pmRef, orderId, attempt }) {
+  async charge({ amountCents, customerRef, pmRef, pmType = 'card', mandate, orderId, attempt }) {
+    const bank = pmType === 'bank';
     try {
       const pi = await this.#request('POST', '/v1/payment_intents', {
         amount: amountCents,
         currency: 'usd',
         customer: customerRef,
         payment_method: pmRef,
+        payment_method_types: [bank ? 'us_bank_account' : 'card'],
+        // Bank debits need the mandate the owner accepted when connecting the account.
+        mandate: bank && mandate ? mandate : undefined,
+        mandate_data: bank && !mandate ? { customer_acceptance: { type: 'offline' } } : undefined,
         off_session: true,
         confirm: true,
         description: `Domaru order ${orderId}`,
         metadata: { order_id: orderId },
       }, `charge-${orderId}-${attempt}`);
-      if (pi.status === 'succeeded' || pi.status === 'processing') return { status: 'succeeded', failure_code: null, ref: pi.id };
-      return { status: 'failed', failure_code: pi.status === 'requires_action' ? 'authentication_required' : pi.status, ref: pi.id };
+      return chargeResult(pi, bank);
     } catch (err) {
       if (err.stripe?.type === 'card_error') {
         return { status: 'failed', failure_code: err.stripe.decline_code ?? err.stripe.code ?? 'card_declined', ref: err.stripe.payment_intent?.id ?? null };
@@ -138,6 +181,30 @@ export class StripePayments {
       throw upstream(err);
     }
   }
+
+  /** Where a pending bank debit stands now. */
+  async checkCharge({ ref }) {
+    try {
+      const pi = await this.#request('GET', `/v1/payment_intents/${encodeURIComponent(ref)}`);
+      return chargeResult(pi, true);
+    } catch (err) {
+      throw upstream(err);
+    }
+  }
+}
+
+function present(pm) {
+  if (pm.type === 'us_bank_account') {
+    return { ref: pm.id, type: 'bank', brand: pm.us_bank_account?.bank_name ?? 'bank account', last4: pm.us_bank_account?.last4 ?? '????' };
+  }
+  return { ref: pm.id, type: 'card', brand: pm.card?.brand ?? 'card', last4: pm.card?.last4 ?? '????' };
+}
+
+function chargeResult(pi, bank) {
+  if (pi.status === 'succeeded') return { status: 'succeeded', failure_code: null, ref: pi.id };
+  if (pi.status === 'processing') return { status: bank ? 'pending' : 'succeeded', failure_code: null, ref: pi.id };
+  const failure = pi.last_payment_error?.decline_code ?? pi.last_payment_error?.code;
+  return { status: 'failed', failure_code: pi.status === 'requires_action' ? 'authentication_required' : failure ?? pi.status, ref: pi.id };
 }
 
 function upstream(err) {

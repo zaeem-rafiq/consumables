@@ -16,6 +16,7 @@ Typical flow: recommend_bundle -> quote -> create_subscription. Then manage with
 Prices are integer cents (USD). Subscriptions get 5% off; orders of $35+ after discount ship free.
 Spend policy is set by the human owner. Orders over policy are held with status "requires_approval"; tell the human, do not retry. Agents cannot approve orders or raise limits.
 No account yet? Call create_account: it returns an api_key and attaches it to this session (stdio). To pay, call create_card_setup_link and send the URL to the human so they can save a card (in test mode you can pass payment_token pm_card_visa instead).
+Cards are the default. After the first delivery arrives, get_account shows bank_payments.offer: tell the human they can switch to bank payments and save 2% on every delivery, and send them the link from create_bank_setup_link.
 Sandbox only: advance_test_clock moves time forward to simulate renewals and deliveries.`;
 
 /**
@@ -113,7 +114,7 @@ export function buildMcpServer(store, session, { attachKeyOnSignup = true } = {}
 
   tool('add_payment_method', {
     title: 'Add payment method',
-    description: 'Test mode only: attach a card from a token (pm_card_visa, pm_card_mastercard, pm_card_declined, pm_card_insufficient_funds). For real cards use create_card_setup_link.',
+    description: 'Test mode only: attach a card from a token (pm_card_visa, pm_card_mastercard, pm_card_declined, pm_card_insufficient_funds), or after the first delivery a bank account (pm_usBankAccount_success, pm_usBankAccount_insufficientFunds, pm_usBankAccount_accountClosed). For real cards use create_card_setup_link.',
     input: { token: z.string(), set_default: z.boolean().default(true) },
   }, (args) => store.addPaymentMethod(auth(), args));
 
@@ -122,7 +123,12 @@ export function buildMcpServer(store, session, { attachKeyOnSignup = true } = {}
     description: 'Get a secure Stripe page where the human saves their card. Send the URL to the account owner; the saved card becomes the default. Nothing is charged.',
   }, () => store.createCardSetupLink(auth()));
 
-  tool('list_payment_methods', { title: 'List payment methods', description: 'Cards on file.', readOnly: true }, () => store.listPaymentMethods(auth()));
+  tool('create_bank_setup_link', {
+    title: 'Create bank setup link',
+    description: 'After the first delivery arrives: get a secure Stripe page where the human signs in to their bank. Bank payers save 2% on every delivery and are charged a few business days before each one ships. Send the URL to the account owner; the account becomes the default and subscriptions switch to it. Offer it when get_account shows bank_payments.offer.',
+  }, () => store.createBankSetupLink(auth()));
+
+  tool('list_payment_methods', { title: 'List payment methods', description: 'Cards and bank accounts on file.', readOnly: true }, () => store.listPaymentMethods(auth()));
 
   tool('add_address', {
     title: 'Add shipping address',
@@ -205,7 +211,7 @@ export function buildMcpServer(store, session, { attachKeyOnSignup = true } = {}
 
   tool('list_orders', {
     title: 'List orders', description: 'Orders, newest first, with payment and shipment status.', readOnly: true,
-    input: { subscription_id: z.string().optional(), status: z.enum(['paid', 'requires_approval', 'payment_failed', 'canceled']).optional(), limit: z.number().int().min(1).max(200).default(20) },
+    input: { subscription_id: z.string().optional(), status: z.enum(['paid', 'payment_pending', 'requires_approval', 'payment_failed', 'canceled']).optional(), limit: z.number().int().min(1).max(200).default(20) },
   }, (args) => store.listOrders(auth(), args));
 
   tool('get_order', { title: 'Get order', description: 'One order with charges, approval and shipment tracking.', readOnly: true, input: { order_id: z.string() } },

@@ -26,9 +26,10 @@ function routes(store) {
     ['PATCH', '/v1/account', 'Update { household_size?, name?, email? }', 'agent', ({ auth, body }) => store.updateAccount(auth, body)],
     ['PATCH', '/v1/account/policy', 'Owner only: update spend policy', 'owner', ({ auth, body }) => store.updatePolicy(auth, body)],
 
-    ['POST', '/v1/payment_methods', 'Test mode: add a card from a token { token } (pm_card_visa, pm_card_declined, ...)', 'agent', ({ auth, body }) => store.addPaymentMethod(auth, body)],
+    ['POST', '/v1/payment_methods', 'Test mode: add a card or bank account from a token { token } (pm_card_visa, pm_card_declined, pm_usBankAccount_success, ...)', 'agent', ({ auth, body }) => store.addPaymentMethod(auth, body)],
     ['POST', '/v1/payment_methods/setup_link', 'Get a secure page where the human saves a card; send the url to the owner', 'agent', ({ auth }) => store.createCardSetupLink(auth)],
-    ['GET', '/v1/payment_methods', 'List cards', 'agent', ({ auth }) => ({ data: store.listPaymentMethods(auth) })],
+    ['POST', '/v1/payment_methods/bank_setup_link', 'After the first delivery: get a page where the human signs in to their bank to pay by bank and save 2% on every delivery', 'agent', ({ auth }) => store.createBankSetupLink(auth)],
+    ['GET', '/v1/payment_methods', 'List cards and bank accounts', 'agent', ({ auth }) => ({ data: store.listPaymentMethods(auth) })],
     ['POST', '/v1/addresses', 'Add a US shipping address', 'agent', ({ auth, body }) => store.addAddress(auth, body)],
     ['GET', '/v1/addresses', 'List addresses', 'agent', ({ auth }) => ({ data: store.listAddresses(auth) })],
 
@@ -104,6 +105,7 @@ function llmsTxt(table, baseUrl) {
 ## Rules
 - Send an Idempotency-Key header on POST/PATCH so retries never double-order.
 - Orders over the owner's spend policy come back with status "requires_approval". Tell the human; do not retry. Only the owner_key can approve or change policy.
+- Cards are the default. After the first delivery arrives, GET /v1/account shows bank_payments.offer: tell the human they can switch to bank payments and save ${PRICING.bank_discount_pct}% on every delivery, and send them the url from POST /v1/payment_methods/bank_setup_link. Bank payers are charged a few business days before each delivery (order status "payment_pending" until it clears). A bounced bank payment is handled like a declined card.
 - Errors are { "error": { "code", "message", "hint" } }. Follow the hint.
 - Sandbox: POST /v1/test/clock/advance {"days":30} simulates renewals and deliveries.
 
@@ -216,13 +218,16 @@ export function createApp(store, { baseUrl, adminKey } = {}) {
       if (url.pathname === '/admin' || url.pathname.startsWith('/admin/')) return await handleAdmin(store, req, res, url, adminKey);
       if (req.method === 'GET' && url.pathname === '/setup/complete') {
         try {
-          await store.completeCardSetup(url.searchParams.get('session_id') ?? '');
+          const done = await store.completeCardSetup(url.searchParams.get('session_id') ?? '');
+          if (done.payment_method.type === 'bank') {
+            return send(res, 200, messagePage('Bank account connected', 'Your deliveries are now paid from your bank account, and you save 2% on every one. You can close this tab.'), 'text/html');
+          }
           return send(res, 200, messagePage('Card saved', 'Your card is saved for Domaru orders. You can close this tab; your agent will take it from here.'), 'text/html');
         } catch (err) {
           return send(res, err.status ?? 500, messagePage('Card not saved', err.hint ?? 'Something went wrong. Please try the link again.'), 'text/html');
         }
       }
-      if (req.method === 'GET' && url.pathname === '/setup/canceled') return send(res, 200, messagePage('No card saved', 'You closed the card page before saving. Ask your agent for a new link when you are ready.'), 'text/html');
+      if (req.method === 'GET' && url.pathname === '/setup/canceled') return send(res, 200, messagePage('Nothing saved', 'You closed the page before saving. Ask your agent for a new link when you are ready.'), 'text/html');
       if (req.method === 'GET' && url.pathname === '/openapi.json') return send(res, 200, openapi(table, base));
       if (req.method === 'GET' && url.pathname === '/llms.txt') return send(res, 200, llmsTxt(table, base), 'text/plain');
 

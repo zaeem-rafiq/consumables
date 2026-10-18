@@ -12,6 +12,7 @@ function fakeStripe() {
   let n = 0;
   const cards = { pm_card_visa: { brand: 'visa', last4: '4242' }, pm_card_chargeDeclined: { brand: 'visa', last4: '0002', decline: 'generic_decline' } };
   const pms = new Map();
+  const intents = new Map();
   const reply = (status, body) => ({ ok: status < 400, status, json: async () => body });
   const fetch = async (url, { method, headers, body }) => {
     const u = new URL(url);
@@ -28,9 +29,15 @@ function fakeStripe() {
     }
     if (method === 'POST' && u.pathname === '/v1/payment_intents') {
       const card = pms.get(params.payment_method);
+      if (card?.bank) {
+        const pi = { id: `pi_${++n}`, status: 'processing' };
+        intents.set(pi.id, pi);
+        return reply(200, pi);
+      }
       if (card?.decline) return reply(402, { error: { type: 'card_error', code: 'card_declined', decline_code: card.decline, payment_intent: { id: `pi_${++n}` } } });
       return reply(200, { id: `pi_${++n}`, status: 'succeeded' });
     }
+    if (method === 'GET' && (m = /^\/v1\/payment_intents\/([^/]+)$/.exec(u.pathname))) return reply(200, intents.get(m[1]));
     if (method === 'POST' && u.pathname === '/v1/checkout/sessions') {
       const id = `cs_${++n}`;
       sessions.set(id, { id, customer: params.customer, client_reference_id: params.client_reference_id, status: 'open' });
@@ -49,7 +56,20 @@ function fakeStripe() {
     pms.set(pmId, card);
     Object.assign(sessions.get(id), { status: 'complete', setup_intent: { payment_method: { id: pmId, card } } });
   };
-  return { fetch, calls, completeSession };
+  /** Simulate the human signing in to their bank on the hosted page. */
+  const completeBankSession = (id) => {
+    const pmId = `pm_${++n}`;
+    pms.set(pmId, { bank: true });
+    Object.assign(sessions.get(id), {
+      status: 'complete',
+      setup_intent: { mandate: 'mandate_1', payment_method: { id: pmId, type: 'us_bank_account', us_bank_account: { bank_name: 'STRIPE TEST BANK', last4: '6789' } } },
+    });
+  };
+  /** Simulate the bank debit clearing or bouncing. */
+  const settle = (piId, outcome) => Object.assign(intents.get(piId), outcome === 'succeeded'
+    ? { status: 'succeeded' }
+    : { status: 'requires_payment_method', last_payment_error: { code: outcome } });
+  return { fetch, calls, completeSession, completeBankSession, settle };
 }
 
 async function stripeStore(opts = {}) {
@@ -133,4 +153,68 @@ test('live keys refuse test tokens', async () => {
   const created = store.createAccount({ name: 'Live' });
   assert.ok(created.api_key.startsWith('ck_live_'));
   await assert.rejects(() => store.addPaymentMethod(store.authenticate(created.api_key), { token: 'pm_card_visa' }), (e) => e.code === 'use_setup_link');
+});
+
+test('bank setup link: owner signs in to their bank after the first delivery; debits wait to clear', async () => {
+  const { store, agent, stripe } = await stripeStore();
+  await store.addPaymentMethod(agent, { token: 'pm_card_visa' });
+  const sub = await store.createSubscription(agent, { items: [{ sku: 'TP-2PLY-30' }, { sku: 'PT-2PLY-12' }], cadence_days: 28 });
+  await assert.rejects(() => store.createBankSetupLink(agent), (e) => e.code === 'bank_payments_not_available_yet');
+  await store.advanceClock(agent, { days: 3 });
+
+  const link = await store.createBankSetupLink(agent);
+  assert.equal(link.offer, 'Switch to bank payments and save 2% on every delivery.');
+  const create = stripe.calls.filter((c) => c.path === '/v1/checkout/sessions').at(-1);
+  assert.equal(create.params['payment_method_types[0]'], 'us_bank_account');
+  assert.equal(create.params['payment_method_options[us_bank_account][verification_method]'], 'instant');
+
+  const sessionId = link.url.split('/').pop();
+  stripe.completeBankSession(sessionId);
+  const server = await startServer(store, { port: 0, host: '127.0.0.1' });
+  try {
+    const res = await fetch(`http://127.0.0.1:${server.address().port}/setup/complete?session_id=${sessionId}`);
+    assert.match(await res.text(), /Bank account connected/);
+  } finally {
+    server.close();
+  }
+  const bank = store.listPaymentMethods(agent).find((x) => x.type === 'bank');
+  assert.equal(bank.last4, '6789');
+  assert.equal(store.getSubscription(agent, sub.id).payment_method_id, bank.id);
+
+  const { next_charge_date: chargeOn, next_order_date: shipOn } = store.getSubscription(agent, sub.id);
+  const today = () => store.getAccount(agent.accountId).today;
+  const days = (a, b) => Math.round((Date.parse(b) - Date.parse(a)) / 86_400_000);
+  await store.advanceClock(agent, { days: days(today(), chargeOn) });
+  let [order] = store.listOrders(agent, { subscription_id: sub.id });
+  assert.equal(order.status, 'payment_pending');
+  const pi = stripe.calls.filter((c) => c.path === '/v1/payment_intents').at(-1);
+  assert.equal(pi.params['payment_method_types[0]'], 'us_bank_account');
+  assert.equal(pi.params.mandate, 'mandate_1');
+
+  stripe.settle(order.charges[0].provider_ref, 'succeeded');
+  await store.advanceClock(agent, { days: 1 });
+  [order] = store.listOrders(agent, { subscription_id: sub.id });
+  assert.equal(order.status, 'paid');
+  if (today() < shipOn) assert.equal(order.shipment, null, 'cleared early: waits for its ship date');
+  await store.advanceClock(agent, { days: days(today(), shipOn) || 1 });
+  [order] = store.listOrders(agent, { subscription_id: sub.id });
+  assert.ok(order.shipment);
+});
+
+test('a bounced Stripe bank debit fails the order', async () => {
+  const { store, agent, stripe } = await stripeStore();
+  await store.addPaymentMethod(agent, { token: 'pm_card_visa' });
+  await store.createSubscription(agent, { items: [{ sku: 'TP-2PLY-30' }, { sku: 'PT-2PLY-12' }], cadence_days: 28 });
+  await store.advanceClock(agent, { days: 3 });
+  const sessionId = (await store.createBankSetupLink(agent)).url.split('/').pop();
+  stripe.completeBankSession(sessionId);
+  await store.completeCardSetup(sessionId);
+  const order = await store.createOrder(agent, { items: [{ sku: 'TP-2PLY-30' }] });
+  assert.equal(order.status, 'payment_pending');
+  stripe.settle(order.charges[0].provider_ref, 'insufficient_funds');
+  await store.advanceClock(agent, { days: 1 });
+  const after = store.getOrder(agent, order.id);
+  assert.equal(after.status, 'payment_failed');
+  assert.equal(after.charges[0].failure_code, 'insufficient_funds');
+  assert.equal(after.shipment, null);
 });

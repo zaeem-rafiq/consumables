@@ -207,7 +207,7 @@ export class Ucp {
       },
       payment: {
         instruments: cards.map((pm) => ({
-          id: pm.id, handler_id: HANDLER_ID, type: 'card', selected: pm.id === (c.payment_method_id ?? account.default_payment_method_id),
+          id: pm.id, handler_id: HANDLER_ID, type: pm.type === 'bank' ? 'bank_account' : 'card', selected: pm.id === (c.payment_method_id ?? account.default_payment_method_id),
           display: { brand: pm.brand, last_digits: pm.last4, description: `${pm.brand} •••• ${pm.last4}` },
         })),
       },
@@ -222,7 +222,7 @@ export class Ucp {
   #syncWithOrder(auth, c) {
     if (c.status !== 'requires_escalation' || !c.order_id) return;
     const order = this.store.getOrder(auth, c.order_id);
-    if (order.status === 'paid') c.status = 'completed';
+    if (order.status === 'paid' || order.status === 'payment_pending') c.status = 'completed';
     else if (order.status === 'canceled') { c.status = 'canceled'; c.messages = [msg('owner_rejected', 'The account owner declined this order.', { severity: 'unrecoverable' })]; }
     else if (order.status === 'payment_failed') { c.status = 'canceled'; c.messages = [msg('payment_failed', 'The owner approved the order but the card was declined.', { severity: 'unrecoverable' })]; }
     else return;
@@ -297,7 +297,7 @@ export class Ucp {
     });
     c.order_id = order.id;
     const extra = [];
-    if (order.status === 'paid') c.status = 'completed';
+    if (order.status === 'paid' || order.status === 'payment_pending') c.status = 'completed';
     else if (order.status === 'requires_approval') {
       c.status = 'requires_escalation';
       c.approval_id = order.approval.id;
