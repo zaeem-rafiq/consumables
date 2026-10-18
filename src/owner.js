@@ -92,7 +92,8 @@ export function connectPage({ client, account, checklist, addresses, paymentMeth
   const pm = paymentMethods.find((x) => x.id === account.default_payment_method_id);
   const ready = checklist.address && checklist.payment_method;
   return layout(`Connect ${client.name}`, `<div class="stack">
-    <h1 class="title">Connect ${esc(client.name)}</h1>
+    <h1 class="title">Connect ${esc(client.name)}${client.verified ? ' <span class="badge badge--go">Verified</span>' : ''}</h1>
+    ${client.verified ? '' : `<p class="notice notice--stop">Domaru hasn't verified this assistant. Any website can call itself "${esc(client.name)}". Only tap Allow if you started this from an app you trust.</p>`}
     <p class="lede">${esc(client.name)} will order household supplies for you within the limits below. It can't approve its own orders or change your limits, and you can disconnect it any time.</p>
     <p class="small muted">Tapping Allow sends you back to <strong>${esc(hostOf(oauth.redirect_uri))}</strong>. If that isn't your assistant's website, tap Cancel.</p>
     ${error ? `<p class="notice notice--stop">${esc(error)}</p>` : ''}
@@ -237,7 +238,7 @@ export function ownerPage({ account, approvals, addresses, paymentMethods, grant
           ${account.bank_payments.offer ? `<form method="post" action="/owner/bank">${hidden({ back })}<button class="btn btn--primary btn--sm">Pay by bank, save 2%</button></form>` : ''}
         </div></div>
         <div class="panel"><h3>Assistants</h3>
-          ${grants.length ? grants.map((g) => `<div class="panel__head"><div><p><strong>${esc(g.client_name)}</strong></p><p class="small muted">Connected ${esc(day(g.connected_at))}${g.last_used_at ? ` · last used ${esc(day(g.last_used_at))}` : ''}</p></div>
+          ${grants.length ? grants.map((g) => `<div class="panel__head"><div><p><strong>${esc(g.client_name)}</strong>${g.verified ? ' <span class="badge badge--go">Verified</span>' : ''}</p><p class="small muted">${g.kind === 'developer_key' ? 'Signed this household up with a key' : 'Connected'} ${esc(day(g.connected_at))}${g.last_used_at ? ` · last used ${esc(day(g.last_used_at))}` : ''}</p></div>
             <form method="post" action="/owner/grants/${esc(g.id)}/revoke">${hidden({ back })}<button class="btn btn--stop btn--sm">Disconnect</button></form></div>`).join('<hr class="divider">')
     : '<p class="muted">None connected. Use "Connect Domaru" in your assistant to add one.</p>'}
         </div>

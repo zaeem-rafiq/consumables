@@ -51,10 +51,14 @@ const { session } = store.finishSignIn(new URL(verify, base).searchParams.get('t
 const client = store.registerClient({ client_name: 'Claude', redirect_uris: ['https://claude.ai/api/mcp/auth_callback'] });
 const authorize = `/oauth/authorize?${new URLSearchParams({ response_type: 'code', client_id: client.client_id, redirect_uri: 'https://claude.ai/api/mcp/auth_callback', code_challenge: 'x'.repeat(43), code_challenge_method: 'S256', state: 's' })}`;
 
+const unknown = store.registerClient({ client_name: 'Home Helper', redirect_uris: ['https://home-helper.example/cb'] });
+const authorizeUnknown = `/oauth/authorize?${new URLSearchParams({ response_type: 'code', client_id: unknown.client_id, redirect_uri: 'https://home-helper.example/cb', code_challenge: 'x'.repeat(43), code_challenge_method: 'S256', state: 's' })}`;
+
 const pages = [
   ['landing', '/', {}],
   ['signin', '/auth/signin', {}],
   ['connect', authorize, { owner: true }],
+  ['connect-unverified', authorizeUnknown, { owner: true }],
   ['owner', '/owner', { owner: true }],
   ['approval', approvalPath, {}],
   ['expired', '/auth/verify?t=nope', {}],

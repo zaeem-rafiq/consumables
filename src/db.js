@@ -216,5 +216,8 @@ export function openDb(path = ':memory:') {
   addCol('subscriptions', 'skip_once_json', "TEXT NOT NULL DEFAULT '[]'");
   addCol('shipments', 'retailer_canceled_at', 'TEXT');
   addCol('shipments', 'problem', 'TEXT');
+  addCol('accounts', 'api_key_issued_at', 'TEXT');
+  addCol('accounts', 'api_key_used_at', 'TEXT');
+  addCol('grants', 'verified_as', 'TEXT');
   return db;
 }
