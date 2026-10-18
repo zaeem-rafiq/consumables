@@ -40,3 +40,11 @@ One row per full run. "Tasks" is the share of task runs where every check passed
 | 2026-10-18 | 7df3cbf | round 10: no lone subscriptions for long-lasting items (36 tasks) | claude-haiku-5-5 | 3 | 100% | 100% |
 | 2026-10-18 | 7df3cbf | round 10: same (36 tasks) [REST] | claude-sonnet-5-5 | 2 | 99% | 100% |
 | 2026-10-18 | 7df3cbf | round 10: same (36 tasks) [REST] | claude-haiku-5-5 | 2 | 99% | 99% |
+| 2026-10-18 | 1e815fc | round 11: returns for unopened items, clearer repeat-claim and cancel guidance (43 tasks) | claude-sonnet-5-5 | 3 | 98% | 99% |
+| 2026-10-18 | 1e815fc | round 11: returns for unopened items, clearer repeat-claim and cancel guidance (43 tasks) | claude-haiku-5-5 | 3 | 100% | 100% |
+| 2026-10-18 | 1e815fc | round 11: same (43 tasks) [REST] | claude-sonnet-5-5 | 2 | 95% | 99% |
+| 2026-10-18 | 1e815fc | round 11: same (43 tasks) [REST] | claude-haiku-5-5 | 2 | 100% | 100% |
+| 2026-10-18 | 7c7b4e9 | round 11b: sandbox bank links work, clearer never-arrived next steps (43 tasks) | claude-sonnet-5-5 | 3 | 100% | 100% |
+| 2026-10-18 | 7c7b4e9 | round 11b: sandbox bank links work, clearer never-arrived next steps (43 tasks) | claude-haiku-5-5 | 3 | 99% | 100% |
+| 2026-10-18 | 7c7b4e9 | round 11b: same (43 tasks) [REST] | claude-sonnet-5-5 | 2 | 100% | 100% |
+| 2026-10-18 | 7c7b4e9 | round 11b: same (43 tasks) [REST] | claude-haiku-5-5 | 2 | 98% | 99% |
