@@ -5,7 +5,7 @@
 // Sign-in is a password form that sets a cookie; nothing secret goes in a URL.
 
 import { renderEmail } from './email-html.js';
-import { layout, esc, usd } from './ui.js';
+import { layout, esc, usd, day } from './ui.js';
 
 const addressText = (a) => [a.name, a.line1, a.line2, `${a.city}, ${a.region} ${a.postal_code}`, a.phone].filter(Boolean).join('\n');
 const signOut = '<a href="/admin/emails">Email log</a><form method="post" action="/admin/logout"><button class="linkbtn">Sign out</button></form>';
@@ -46,19 +46,20 @@ const flags = (o) => [
 function orderCard(o) {
   const placed = o.shipment.status === 'placed';
   return `<div class="panel stack--tight">
-    <div class="panel__head"><h3><a href="/admin/orders/${esc(o.id)}">${esc(o.account.name)}</a> ${flags(o)}</h3><span class="small muted">${esc(o.created_at.slice(0, 10))} · paid ${usd(o.amounts.total_cents)} · <span class="mono">${esc(o.id)}</span></span></div>
+    <div class="panel__head"><h3><a href="/admin/orders/${esc(o.id)}">${esc(o.account.name)}</a> ${flags(o)}</h3><span class="small muted">${esc(day(o.created_at))} · paid ${usd(o.amounts.total_cents)} · <span class="mono">${esc(o.id)}</span></span></div>
     ${o.shipment.retailer_canceled_at ? '<p class="notice notice--stop">Walmart canceled this. Order it on Amazon today at no extra cost to the customer, or refund the items from the order page.</p>' : ''}
     <div class="grid2">
-      <div class="stack--tight"><p class="small muted">${placed ? `Placed on Walmart${o.shipment.retailer_order_id ? ` · ${esc(o.shipment.retailer_order_id)}` : ''}` : '1. Add to your Walmart.com cart'}</p>${cart(o)}</div>
-      <div class="stack--tight"><p class="small muted">2. Walmart delivery address</p><p class="addr panel" style="user-select:all">${esc(addressText(o.ship_to))}</p>
+      <div class="qstep"><p class="step-label">${placed ? `Placed on Walmart${o.shipment.retailer_order_id ? ` · ${esc(o.shipment.retailer_order_id)}` : ''}` : '<b>1</b> Add to your Walmart.com cart'}</p>${cart(o)}</div>
+      <div class="qstep"><p class="step-label"><b>2</b> Ship to</p><p class="addr panel" style="user-select:all">${esc(addressText(o.ship_to))}</p>
         ${o.ship_to.phone ? '' : '<p class="small muted">No phone on file. Walmart asks for one; your own number works.</p>'}</div>
     </div>
-    <div class="actions">
-      ${placed ? '' : `<form class="actions" method="post" action="/admin/orders/${esc(o.id)}/place"><input type="text" name="retailer_order_id" placeholder="Walmart order number" style="max-width:16rem"><button class="btn btn--sm">Mark placed</button></form>`}
-      <form class="actions" method="post" action="/admin/orders/${esc(o.id)}/ship">
-        <select name="carrier" style="max-width:9rem"><option>Walmart</option><option>FedEx</option><option>UPS</option><option>USPS</option><option>OnTrac</option><option>Amazon</option><option>Other</option></select>
-        <input type="text" name="tracking_number" placeholder="Tracking number" required style="max-width:16rem">
-        <button class="btn btn--primary btn--sm">Mark shipped</button>
+    <div class="grid2">
+      ${placed ? '<p class="step-label step-label--done">Bought on Walmart</p>' : `<form class="qstep" method="post" action="/admin/orders/${esc(o.id)}/place"><p class="step-label"><b>3</b> Check out, then paste the Walmart order number</p>
+        <div class="actions"><input type="text" name="retailer_order_id" placeholder="Walmart order number" style="max-width:16rem"><button class="btn btn--primary btn--sm">Mark placed</button></div></form>`}
+      <form class="qstep" method="post" action="/admin/orders/${esc(o.id)}/ship"><p class="step-label"><b>4</b> When Walmart ships it</p>
+        <div class="actions"><select name="carrier" style="max-width:9rem"><option>Walmart</option><option>FedEx</option><option>UPS</option><option>USPS</option><option>OnTrac</option><option>Amazon</option><option>Other</option></select>
+        <input type="text" name="tracking_number" placeholder="Tracking number" required style="max-width:12rem">
+        <button class="btn btn--sm${placed ? ' btn--primary' : ''}">Mark shipped</button></div>
       </form>
     </div>
   </div>`;
@@ -81,7 +82,7 @@ function caseCard(c) {
 }
 
 export function fulfillmentPage({ awaiting, placed, shipped, cases, late }) {
-  const shippedRows = shipped.map((o) => `<tr><td><a href="/admin/orders/${esc(o.id)}">${esc(o.account.name)}</a> ${flags(o)}</td><td>${esc(o.shipment.carrier ?? '')} <span class="mono">${esc(o.shipment.tracking_number ?? '')}</span></td><td>${esc(o.shipment.estimated_delivery_date)}</td>
+  const shippedRows = shipped.map((o) => `<tr><td><a href="/admin/orders/${esc(o.id)}">${esc(o.account.name)}</a> ${flags(o)}</td><td>${esc(o.shipment.carrier ?? '')} <span class="mono">${esc(o.shipment.tracking_number ?? '')}</span></td><td>${esc(day(o.shipment.estimated_delivery_date))}</td>
     <td class="num"><form method="post" action="/admin/orders/${esc(o.id)}/deliver"><button class="btn btn--sm">Delivered</button></form></td></tr>`).join('');
   return layout('Orders', `<div class="stack">
     <div class="stack--tight"><h1 class="title">Orders</h1>

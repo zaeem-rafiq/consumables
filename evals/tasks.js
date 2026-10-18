@@ -715,10 +715,12 @@ export const TASKS = [
     async grade({ store, ctx }) {
       const active = subs(store, ctx, 'active');
       const items = active.flatMap((s) => s.items);
-      const loadsPerDay = active.reduce((n, s) => n + s.items.filter((i) => i.sku === 'LAUN-PODS-76').reduce((m, i) => m + (i.quantity * 76) / s.cadence_days, 0), 0);
+      // Enough pods for the laundry this household actually does (the old liquid was oversupplied).
+      const life = packDays(store, ctx, ['LAUN-PODS-76'], 3)['LAUN-PODS-76'];
+      const podRate = active.reduce((n, s) => n + s.items.filter((i) => i.sku === 'LAUN-PODS-76').reduce((m, i) => m + (i.quantity * life) / s.cadence_days, 0), 0);
       return [
         check('pods instead of liquid', items.some((i) => i.sku === 'LAUN-PODS-76') && !items.some((i) => i.sku === 'LAUN-LIQ-115')),
-        check('as many loads as before (pods are 76 a pack, liquid 115)', loadsPerDay >= (115 / 84) * 0.95, `${(loadsPerDay * 84).toFixed(0)} loads per 84 days`),
+        check('enough pods for their laundry', podRate >= 0.9, podRate.toFixed(2)),
         check('dryer sheets kept', items.some((i) => i.sku === 'DRYER-240')),
       ];
     },

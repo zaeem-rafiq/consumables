@@ -447,7 +447,14 @@ export class Store {
     }
     this.db.prepare('UPDATE accounts SET household_size = ?, name = ?, email = ? WHERE id = ?')
       .run(household_size ?? a.household_size, name ?? a.name, email ?? a.email, a.id);
-    return this.getAccount(a.id);
+    const out = this.getAccount(a.id);
+    if (household_size != null && household_size !== a.household_size) {
+      // Deliveries were sized for the old household; say which no longer fit.
+      const checks = this.db.prepare("SELECT * FROM subscriptions WHERE account_id = ? AND status != 'canceled'").all(a.id)
+        .map((x) => this.#presentSub(x)).filter((x) => x.supply_check).map((x) => ({ subscription_id: x.id, supply_check: x.supply_check }));
+      out.subscriptions_to_adjust = checks.length ? checks : 'Existing subscriptions still fit this household.';
+    }
+    return out;
   }
 
   updatePolicy(auth, patch) {
