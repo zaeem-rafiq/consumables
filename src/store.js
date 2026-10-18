@@ -783,10 +783,6 @@ export class Store {
       household_size: people,
       plan,
       estimated_monthly_cents: plan.reduce((sum, d) => sum + d.estimated_monthly_cents, 0),
-      // The first delivery in the plan, for clients that read a single bundle.
-      cadence_days: main.cadence_days,
-      items: main.items,
-      per_delivery: main.per_delivery,
       next_step: plan.length > 1
         ? `Create one subscription per entry in plan, each with its own items and cadence_days (create_subscription / POST /v1/subscriptions). Later entries hold items that last much longer, so sending them every ${main.cadence_days} days would pile them up.`
         : 'Pass items and cadence_days to create_subscription (POST /v1/subscriptions).',

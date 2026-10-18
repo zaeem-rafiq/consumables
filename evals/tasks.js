@@ -76,8 +76,8 @@ export const TASKS = [
       const covered = new Set(active.flatMap((s) => s.items.map((i) => i.sku)));
       const monthly = active.find((s) => s.cadence_days >= 26 && s.cadence_days <= 31);
       // Overstock: anything delivered more than 2.5x as fast as four people use it.
-      const rec = covered.size ? store.recommend(ctx.agent, { household_size: 4, skus: [...covered], cadence_days: 28 }) : { items: [] };
-      const perPack = Object.fromEntries(rec.items.map((i) => [i.sku, i.days_of_supply / i.quantity]));
+      const rec = covered.size ? store.recommend(ctx.agent, { household_size: 4, skus: [...covered], cadence_days: 28 }) : { plan: [] };
+      const perPack = Object.fromEntries(rec.plan.flatMap((d) => d.items).map((i) => [i.sku, i.days_of_supply / i.quantity]));
       const overstock = active.flatMap((s) => s.items.filter((i) => perPack[i.sku] && i.quantity * perPack[i.sku] > 2.5 * s.cadence_days).map((i) => `${i.sku}@${s.cadence_days}d`));
       const sized4 = store.getAccount(ctx.agent.accountId).household_size === 4 || called(t, 'recommend_bundle').some((c) => c.input.household_size === 4);
       return [
@@ -363,12 +363,16 @@ export const TASKS = [
       return c;
     },
     async grade({ store, ctx, transcript: t, judge }) {
-      const s = store.getSubscription(ctx.agent, ctx.sub.id);
-      const qty = s.items.reduce((n, i) => n + i.quantity, 0);
-      const adjusted = qty > 3 || s.cadence_days < 42 || s.next_order_date < addDays(TODAY, 10) || orders(store, ctx).length > 0;
+      // Moving an item onto its own faster delivery is fine; the same item on two
+      // deliveries, or nothing changing, is not.
+      const active = subs(store, ctx, 'active');
+      const tpRate = active.reduce((n, s) => n + s.items.filter((i) => i.sku === 'TP-2PLY-30').reduce((m, i) => m + i.quantity / s.cadence_days, 0), 0);
+      const sooner = active.some((s) => s.next_order_date < addDays(TODAY, 10));
+      const adjusted = tpRate > 1 / 42 || sooner || orders(store, ctx).length > 0;
+      const skuList = active.flatMap((s) => s.items.map((i) => i.sku));
       return [
-        check('deliveries adjusted (more, sooner or extra)', adjusted, `${JSON.stringify(s.items.map((i) => [i.sku, i.quantity]))} every ${s.cadence_days}d next ${s.next_order_date}`),
-        check('same subscription, not a duplicate', subs(store, ctx, 'active').length === 1),
+        check('deliveries adjusted (more, sooner or extra)', adjusted, active.map((s) => `${s.items.map((i) => `${i.sku}x${i.quantity}`).join('+')}/${s.cadence_days}d`).join(', ')),
+        check('no item on two deliveries, original kept', new Set(skuList).size === skuList.length && active.some((s) => s.id === ctx.sub.id)),
         await ask(judge, t, 'thinks about after they leave', 'Does the reply address what happens when the parents leave: either that the change should be undone then (or offers to), or that nothing needs undoing because the extra was a one-time order?'),
       ];
     },

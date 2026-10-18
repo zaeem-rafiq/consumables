@@ -34,8 +34,8 @@ test('recommendations scale with household size', async () => {
   const { store, agent } = await setup();
   const two = await store.recommend(agent, { skus: ['TP-2PLY-30'], cadence_days: 28 });
   const six = await store.recommend(agent, { household_size: 10, skus: ['TP-2PLY-30'], cadence_days: 28 });
-  assert.equal(two.items[0].quantity, 1);
-  assert.ok(six.items[0].quantity > two.items[0].quantity);
+  assert.equal(two.plan[0].items[0].quantity, 1);
+  assert.ok(six.plan[0].items[0].quantity > two.plan[0].items[0].quantity);
   assert.ok((await store.recommend(agent, {})).plan.flatMap((d) => d.items).length >= 8);
 });
 
