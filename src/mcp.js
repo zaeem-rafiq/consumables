@@ -145,7 +145,7 @@ export function buildMcpServer(store, session, { attachKeyOnSignup = true } = {}
   // ---- pricing
   tool('quote', {
     title: 'Quote',
-    description: 'Price a basket exactly as it would be charged, and say whether spend policy would hold it for human approval. Nothing is charged.',
+    description: 'Price a basket exactly as it would be charged, and say whether spend policy would hold it for human approval. Also lists any of these items already on the way or due from a subscription within a week (already_coming). Nothing is charged.',
     readOnly: true,
     input: { items, subscription: z.boolean().default(true), cadence_days: z.number().int().min(7).max(180).optional() },
   }, (args) => store.quote(auth(), args));
@@ -206,7 +206,7 @@ export function buildMcpServer(store, session, { attachKeyOnSignup = true } = {}
 
   // ---- orders
   tool('place_order', {
-    title: 'Place one-time order', description: 'Buy once, no subscription (no subscription discount).',
+    title: 'Place one-time order', description: 'Buy once, no subscription (no subscription discount). Quote first: if the quote shows already_coming, tell the household what is already on the way and when, and only buy more if they clearly need it sooner or need more.',
     input: { items, address_id: z.string().optional(), payment_method_id: z.string().optional(), idempotency_key: idemKey },
   }, (args) => idem(args, 'place_order', (a, rest) => store.createOrder(a, rest)));
 

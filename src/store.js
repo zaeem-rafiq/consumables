@@ -694,10 +694,36 @@ export class Store {
       },
       valid_until: addDays(dateOf(account.clock), 1),
     };
+    const coming = this.#alreadyComing(account, norm.map((i) => i.sku));
+    if (coming.length) out.already_coming = { items: coming, note: 'Some of these are already on the way or due soon. Tell the household before ordering more, so they are not bought twice.' };
     if (subscription && cadence_days) {
       this.#validateCadence(cadence_days);
       out.cadence_days = cadence_days;
       out.estimated_monthly_cents = Math.round((priced.amounts.total_cents * 30) / cadence_days);
+    }
+    return out;
+  }
+
+  /** Items in skus that are already on the way, or due from a subscription within a week. */
+  #alreadyComing(account, skus) {
+    const want = new Set(skus);
+    const today = dateOf(account.clock);
+    const out = [];
+    const open = this.db.prepare(`SELECT o.id, o.status, o.lines_json, o.subscription_id, s.status AS ship_status, s.estimated_delivery_date
+      FROM orders o LEFT JOIN shipments s ON s.order_id = o.id
+      WHERE o.account_id = ? AND o.status IN ('paid', 'payment_pending', 'requires_approval') AND (s.status IS NULL OR s.status NOT IN ('delivered', 'canceled'))`).all(account.id);
+    for (const o of open) {
+      for (const l of p(o.lines_json)) {
+        if (!want.has(l.sku)) continue;
+        out.push({ sku: l.sku, name: l.name, quantity: l.quantity, order_id: o.id, from_subscription: o.subscription_id ?? null,
+          ...(o.status === 'requires_approval' ? { status: 'waiting for the owner to approve' } : { status: 'on the way', estimated_arrival_date: o.estimated_delivery_date ?? null }) });
+      }
+    }
+    const soon = this.db.prepare("SELECT * FROM subscriptions WHERE account_id = ? AND status = 'active' AND next_order_date <= ?").all(account.id, addDays(today, 7));
+    for (const sub of soon) {
+      for (const l of p(sub.items_json)) {
+        if (want.has(l.sku)) out.push({ sku: l.sku, quantity: l.quantity, subscription_id: sub.id, status: 'next subscription delivery', order_date: sub.next_order_date, estimated_arrival_date: addDays(sub.next_order_date, this.fulfillment === 'mock' ? 3 : 5) });
+      }
     }
     return out;
   }

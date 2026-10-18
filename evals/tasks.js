@@ -535,8 +535,9 @@ export const TASKS = [
     title: 'Adjust deliveries when someone moves in',
     prompt: "My sister is moving in with us for good, so there are four of us now. Adjust things so we don't run short.",
     async setup(store) {
+      // One pack of each lasts three people about 42 days; for four it runs out first.
       const c = await seedAccount(store, { household_size: 3 });
-      await store.createSubscription(c.agent, { items: PAPER, cadence_days: 28, start_date: addDays(TODAY, 6) });
+      await store.createSubscription(c.agent, { items: PAPER, cadence_days: 42, start_date: addDays(TODAY, 6) });
       return c;
     },
     async grade({ store, ctx, transcript: t }) {
@@ -546,7 +547,7 @@ export const TASKS = [
       const enough = ['TP-2PLY-30', 'PT-2PLY-12'].every((sku) => rate(sku) * days[sku] >= 0.9);
       return [
         check('household size is 4', store.getAccount(ctx.agent.accountId).household_size === 4),
-        check('more toilet paper per month', rate('TP-2PLY-30') >= (1 / 28) * 1.2, (rate('TP-2PLY-30') * 28).toFixed(2)),
+        check('more toilet paper per month', rate('TP-2PLY-30') >= (1 / 42) * 1.2, (rate('TP-2PLY-30') * 42).toFixed(2)),
         check('enough of both for four people', enough),
       ];
     },
