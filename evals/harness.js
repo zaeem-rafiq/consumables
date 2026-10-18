@@ -106,6 +106,7 @@ const REST_TOOLS = [
   ['GET', /^\/v1\/categories$/, 'list_categories'], ['GET', /^\/v1\/products$/, 'search_products'], ['GET', /^\/v1\/products\/[^/]+$/, 'get_product'],
   ['POST', /^\/v1\/recommendations$/, 'recommend_bundle'], ['GET', /^\/v1\/account$/, 'get_account'], ['PATCH', /^\/v1\/account$/, 'update_household'],
   ['POST', /^\/v1\/payment_methods$/, 'add_payment_method'], ['POST', /^\/v1\/payment_methods\/setup_link$/, 'create_card_setup_link'],
+  ['POST', /^\/v1\/payment_methods\/bank_setup_link$/, 'create_bank_setup_link'],
   ['GET', /^\/v1\/payment_methods$/, 'list_payment_methods'], ['POST', /^\/v1\/addresses$/, 'add_address'], ['GET', /^\/v1\/addresses$/, 'list_addresses'],
   ['POST', /^\/v1\/quotes$/, 'quote'], ['POST', /^\/v1\/subscriptions$/, 'create_subscription'], ['GET', /^\/v1\/subscriptions$/, 'list_subscriptions'],
   ['GET', /^\/v1\/subscriptions\/[^/]+$/, 'get_subscription'], ['PATCH', /^\/v1\/subscriptions\/[^/]+$/, 'update_subscription'],
@@ -121,7 +122,9 @@ const REST_TOOLS = [
 export function restCalls(calls) {
   const out = [];
   for (const c of calls) {
-    const cmd = String(c.input?.command ?? '');
+    let cmd = String(c.input?.command ?? '');
+    // Resolve shell variables that hold the base URL (B=http://...; curl "$B/v1/...").
+    for (const [, name, val] of cmd.matchAll(/\b([A-Za-z_]\w*)=["']?(https?:\/\/[^\s"';]+)/g)) cmd = cmd.replace(new RegExp(`\\$\\{?${name}\\}?(?!\\w)`, 'g'), val);
     for (const m of cmd.matchAll(/curl\b[^|;&]*/g)) {
       const part = m[0];
       const url = /https?:\/\/[^\s'"]+/.exec(part)?.[0];
