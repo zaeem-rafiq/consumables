@@ -787,6 +787,9 @@ export class Store {
       const exact = Math.min(180, Math.max(7, Math.floor(first.packDays)));
       if (!best && fits(first, exact)) best = { cadence_days: exact, rows: rest.filter((u) => fits(u, exact)) };
       if (!best) break;
+      // A fourth box only earns its place if it ships free; otherwise it's a one-time add.
+      const fourth = groups.filter((g) => g.rows.length).length === 3;
+      if (fourth && this.price(best.rows.map((u) => ({ sku: u.prod.sku, quantity: qty(u, best.cadence_days) })), { subscription: true }).amounts.shipping_cents > 0) break;
       groups.push(best);
       rest = rest.filter((u) => !best.rows.includes(u));
     }
@@ -794,7 +797,7 @@ export class Store {
       sku: prod.sku, name: prod.name, quantity: 1, lasts_days: Number.isFinite(packDays) ? Math.round(packDays) : null,
       note: packDays > 180 * 1.25
         ? `One pack lasts about ${Math.round(packDays)} days, longer than any delivery schedule. Add it to a one-time order now and again when it runs low.`
-        : `Doesn't fit these delivery schedules without running short or piling up. Add it to the first order once, or give it its own subscription every ${Math.min(180, Math.max(7, Math.floor(packDays / 7) * 7))} days if they want it automatic.`,
+        : `One pack lasts about ${Math.round(packDays)} days and doesn't fit these delivery schedules without running short or piling up. Offer it as a one-time order; a subscription of its own would mostly pay for shipping.`,
     }));
     const nonEmpty = groups.filter((g) => g.rows.length);
     const plan = nonEmpty.map((g) => {

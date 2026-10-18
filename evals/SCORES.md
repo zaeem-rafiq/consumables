@@ -28,3 +28,11 @@ One row per full run. "Tasks" is the share of task runs where every check passed
 | 2026-10-18 | 22fc2ac | round 7: supply checks, household changes flag subscriptions, one-off addresses (36 tasks) | claude-haiku-5-5 | 3 | 93% | 98% |
 | 2026-10-18 | 22fc2ac | round 7: llms.txt guidance parity, one-off addresses (36 tasks) [REST] | claude-sonnet-5-5 | 2 | 100% | 100% |
 | 2026-10-18 | 22fc2ac | round 7: llms.txt guidance parity, one-off addresses (36 tasks) [REST] | claude-haiku-5-5 | 2 | 90% | 97% |
+| 2026-10-18 | 7fbf041 | round 8: plans pass the supply check, order_once, owner decline outcome, suggested_update (36 tasks) | claude-sonnet-5-5 | 3 | 97% | 99% |
+| 2026-10-18 | 7fbf041 | round 8: plans pass the supply check, order_once, owner decline outcome, suggested_update (36 tasks) | claude-haiku-5-5 | 3 | 97% | 99% |
+| 2026-10-18 | 7fbf041 | round 8: same (36 tasks) [REST] | claude-sonnet-5-5 | 2 | 94% | 98% |
+| 2026-10-18 | 7fbf041 | round 8: same (36 tasks) [REST] | claude-haiku-5-5 | 2 | 99% | 100% |
+| 2026-10-18 | b9db83a | round 9: plans never run short or pile up, stay under approval limit (36 tasks) | claude-sonnet-5-5 | 3 | 96% | 99% |
+| 2026-10-18 | b9db83a | round 9: plans never run short or pile up, stay under approval limit (36 tasks) | claude-haiku-5-5 | 3 | 96% | 99% |
+| 2026-10-18 | b9db83a | round 9: same (36 tasks) [REST] | claude-sonnet-5-5 | 2 | 94% | 99% |
+| 2026-10-18 | b9db83a | round 9: same (36 tasks) [REST] | claude-haiku-5-5 | 2 | 94% | 99% |
