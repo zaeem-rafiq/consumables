@@ -150,6 +150,8 @@ mark.blank { background: var(--warn-bg); color: var(--ink); padding: 0 0.25rem; 
 .why li::before { content: ""; width: 10px; height: 10px; background: var(--stop); transform: translateY(1px); }
 .qstep { display: grid; gap: var(--s2); align-content: start; }
 .qstep > * { margin: 0; }
+.qstep .actions input { flex: 1 1 10rem; min-width: 0; width: auto; }
+.qstep .actions .qstep__carrier { flex: 0 1 8rem; width: auto; }
 .step-label { font: 600 0.8125rem/1.3 var(--body); color: var(--muted); text-transform: uppercase; letter-spacing: 0.04em; }
 .step-label b { display: inline-grid; place-items: center; width: 1.25rem; height: 1.25rem; margin-right: var(--s2); border-radius: 50%; background: var(--ink); color: var(--paper); font-size: 0.75rem; }
 .step-label--done { color: var(--go); }

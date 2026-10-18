@@ -133,10 +133,10 @@ export function buildMcpServer(store, session, { attachKeyOnSignup = true } = {}
 
   tool('add_address', {
     title: 'Add shipping address',
-    description: 'Add a US shipping address.',
+    description: 'Add a US shipping address. It does not replace the home address unless set_default is true: leave set_default out for a gift or one-off (pass address_id on that order), set it true when the household moves. The first address on an account becomes the default either way.',
     input: {
       name: z.string(), line1: z.string(), line2: z.string().optional(), city: z.string(), region: z.string().describe('State, e.g. NY'),
-      postal_code: z.string(), phone: z.string().optional().describe('Recipient phone for the delivery carrier (recommended)'), set_default: z.boolean().default(true),
+      postal_code: z.string(), phone: z.string().optional().describe('Recipient phone for the delivery carrier (recommended)'), set_default: z.boolean().default(false).describe('true only when this becomes the home address for future deliveries (a move)'),
     },
   }, (args) => store.addAddress(auth(), args));
 

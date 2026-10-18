@@ -576,7 +576,7 @@ export class Store {
     return x;
   }
 
-  addAddress(auth, { name, line1, line2, city, region, postal_code, phone, country = 'US', set_default = true } = {}) {
+  addAddress(auth, { name, line1, line2, city, region, postal_code, phone, country = 'US', set_default = false } = {}) {
     for (const [k, v] of Object.entries({ name, line1, city, region, postal_code })) {
       if (!v || typeof v !== 'string') throw badRequest('missing_param', `${k} is required.`, { param: k });
     }

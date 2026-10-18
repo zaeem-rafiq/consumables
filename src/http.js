@@ -32,7 +32,7 @@ function routes(store) {
     ['POST', '/v1/payment_methods/setup_link', 'Get a secure page where the human saves a card; send the url to the owner', 'agent', ({ auth }) => store.createCardSetupLink(auth)],
     ['POST', '/v1/payment_methods/bank_setup_link', 'After the first delivery: get a page where the human signs in to their bank to pay by bank and save 2% on every delivery', 'agent', ({ auth }) => store.createBankSetupLink(auth)],
     ['GET', '/v1/payment_methods', 'List cards and bank accounts', 'agent', ({ auth }) => ({ data: store.listPaymentMethods(auth) })],
-    ['POST', '/v1/addresses', 'Add a US shipping address', 'agent', ({ auth, body }) => store.addAddress(auth, body)],
+    ['POST', '/v1/addresses', 'Add a US shipping address { name, line1, line2?, city, region, postal_code, phone?, set_default? }. Stays a one-off (use its id as address_id on that order) unless set_default: true, for a move', 'agent', ({ auth, body }) => store.addAddress(auth, body)],
     ['GET', '/v1/addresses', 'List addresses (confirmed: false means the first order there waits for the owner)', 'agent', ({ auth }) => ({ data: store.listAddresses(auth) })],
     ['POST', '/v1/addresses/:id/confirm', 'Owner only: confirm an address', 'owner', ({ auth, params }) => store.confirmAddress(auth, params.id)],
 

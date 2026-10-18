@@ -55,11 +55,11 @@ function orderCard(o) {
     </div>
     <div class="grid2">
       ${placed ? '<p class="step-label step-label--done">Bought on Walmart</p>' : `<form class="qstep" method="post" action="/admin/orders/${esc(o.id)}/place"><p class="step-label"><b>3</b> Check out, then paste the Walmart order number</p>
-        <div class="actions"><input type="text" name="retailer_order_id" placeholder="Walmart order number" style="max-width:16rem"><button class="btn btn--primary btn--sm">Mark placed</button></div></form>`}
+        <div class="actions"><input type="text" name="retailer_order_id" placeholder="Walmart order #"><button class="btn btn--primary">Mark placed</button></div></form>`}
       <form class="qstep" method="post" action="/admin/orders/${esc(o.id)}/ship"><p class="step-label"><b>4</b> When Walmart ships it</p>
-        <div class="actions"><select name="carrier" style="max-width:9rem"><option>Walmart</option><option>FedEx</option><option>UPS</option><option>USPS</option><option>OnTrac</option><option>Amazon</option><option>Other</option></select>
-        <input type="text" name="tracking_number" placeholder="Tracking number" required style="max-width:12rem">
-        <button class="btn btn--sm${placed ? ' btn--primary' : ''}">Mark shipped</button></div>
+        <div class="actions"><select name="carrier" class="qstep__carrier"><option>Walmart</option><option>FedEx</option><option>UPS</option><option>USPS</option><option>OnTrac</option><option>Amazon</option><option>Other</option></select>
+        <input type="text" name="tracking_number" placeholder="Tracking number" required>
+        <button class="btn${placed ? ' btn--primary' : ''}">Mark shipped</button></div>
       </form>
     </div>
   </div>`;
@@ -120,11 +120,11 @@ export function adminOrderPage(o) {
     <div class="panel stack">
       ${o.refundable_cents > 0 ? `<form class="actions" method="post" action="/admin/orders/${esc(o.id)}/refund">
         <span class="money" style="max-width:9rem"><span>$</span><input type="number" name="amount" step="0.01" min="0.01" max="${(o.refundable_cents / 100).toFixed(2)}" placeholder="${(o.refundable_cents / 100).toFixed(2)}"></span>
-        <input type="text" name="reason" placeholder="Reason" style="max-width:16rem"><button class="btn btn--sm">Refund</button>
+        <input type="text" name="reason" placeholder="Reason"><button class="btn btn--sm">Refund</button>
         <span class="small muted">Empty amount refunds the rest (${usd(o.refundable_cents)}).</span></form>` : '<p class="muted small">Nothing left to refund.</p>'}
       ${sh && sh.status !== 'canceled' ? `<form class="actions" method="post" action="/admin/orders/${esc(o.id)}/problem">
         <select name="problem" style="max-width:12rem"><option value="lost">Lost or stuck</option><option value="damaged">Damaged</option><option value="wrong_item">Wrong item</option></select>
-        <input type="text" name="note" placeholder="Note" style="max-width:16rem"><button class="btn btn--quiet btn--sm">Mark problem</button></form>` : ''}
+        <input type="text" name="note" placeholder="Note"><button class="btn btn--quiet btn--sm">Mark problem</button></form>` : ''}
       ${sh && ['placed', 'awaiting_fulfillment'].includes(sh.status) ? `<form method="post" action="/admin/orders/${esc(o.id)}/retailer-canceled"><button class="btn btn--stop btn--sm">Walmart canceled it</button></form>` : ''}
     </div>
     ${o.refunds.length ? `<h2 class="section">Refunds</h2><div class="panel"><table class="lines"><tbody>${o.refunds.map((r) => `<tr><td>${esc(r.created_at.slice(0, 10))}</td><td>${esc(r.reason)}</td><td>${esc(r.status)}</td><td class="num">${usd(r.amount_cents)}</td></tr>`).join('')}</tbody></table></div>` : ''}
