@@ -557,7 +557,7 @@ export class Store {
       throw badRequest('setup_links_unavailable', 'Card setup links need the Stripe payment provider.', { hint: 'In the sandbox, call add_payment_method with token pm_card_visa instead.' });
     }
     const a = this.#account(auth.accountId);
-    const link = await this.payments.createSetupLink({ customerRef: await this.#customer(a), accountId: a.id });
+    const link = await this.payments.createSetupLink({ customerRef: await this.#customer(a), accountId: a.id, publicUrl: this.publicUrl });
     return { url: link.url, expires_at: link.expires_at, next_step: 'Send this link to the account owner. Once they save a card it becomes the default payment method; check with list_payment_methods.' };
   }
 
@@ -568,7 +568,7 @@ export class Store {
     if (!this.payments.supportsSetupLinks) {
       throw badRequest('setup_links_unavailable', 'Bank setup links need the Stripe payment provider.', { hint: 'In the sandbox, call add_payment_method with token pm_usBankAccount_success instead.' });
     }
-    const link = await this.payments.createSetupLink({ customerRef: await this.#customer(a), accountId: a.id, type: 'bank' });
+    const link = await this.payments.createSetupLink({ customerRef: await this.#customer(a), accountId: a.id, type: 'bank', publicUrl: this.publicUrl });
     return {
       url: link.url, expires_at: link.expires_at, offer: BANK_OFFER,
       next_step: 'Send this link to the account owner. They sign in to their bank on a Stripe page; the account becomes the default and their subscriptions switch to it. Bank payments are charged a few business days before each delivery ships.',
@@ -579,7 +579,7 @@ export class Store {
   async completeCardSetup(sessionId) {
     const done = await this.payments.completeSetup(sessionId);
     if (!done) throw badRequest('setup_incomplete', 'This card setup has not been completed.', { hint: 'Open the setup link again and finish saving the card.' });
-    const a = this.db.prepare('SELECT * FROM accounts WHERE id = ? AND provider_customer_id = ?').get(done.accountId, done.customerRef);
+    const a = this.db.prepare('SELECT * FROM accounts WHERE id = ? AND provider_customer_id IS ?').get(done.accountId, done.customerRef);
     if (!a) throw notFound('account', done.accountId);
     return { account_id: a.id, payment_method: this.#savePm(this.#account(a.id), done.card, true) };
   }

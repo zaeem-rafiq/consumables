@@ -10,7 +10,7 @@
 // 'pending' and only clears, or bounces, a few business days later. The store
 // polls checkCharge until it settles.
 
-import { createHmac, timingSafeEqual } from 'node:crypto';
+import { createHmac, randomBytes, timingSafeEqual } from 'node:crypto';
 import { ApiError, badRequest } from './errors.js';
 
 const MOCK_CARDS = {
@@ -42,7 +42,8 @@ export function addBusinessDays(date, n) {
 
 export class MockPayments {
   name = 'mock';
-  supportsSetupLinks = false;
+  supportsSetupLinks = true;
+  #sessions = new Map();
 
   async ensureCustomer() {
     return null;
@@ -68,6 +69,22 @@ export class MockPayments {
 
   async refund({ orderId, n }) {
     return { status: 'succeeded', ref: `mock_re_${orderId}_${n}` };
+  }
+
+  /**
+   * Stands in for Stripe's hosted page so the sandbox behaves like test mode:
+   * opening the link saves the test card or test bank account straight away.
+   */
+  async createSetupLink({ accountId, type = 'card', publicUrl }) {
+    const id = `mock_cs_${randomBytes(9).toString('base64url')}`;
+    this.#sessions.set(id, { accountId, type });
+    return { id, url: `${publicUrl}/setup/complete?session_id=${id}`, expires_at: null };
+  }
+
+  async completeSetup(sessionId) {
+    const s = this.#sessions.get(sessionId);
+    if (!s) return null;
+    return { accountId: s.accountId, customerRef: null, card: await this.attachToken(null, s.type === 'bank' ? 'pm_usBankAccount_success' : 'pm_card_visa') };
   }
 
   /** Mock bank debits settle after the clearing window, on the account's clock. */
