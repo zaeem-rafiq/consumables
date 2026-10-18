@@ -299,10 +299,10 @@ export function landingBody({ base = '' } = {}) {
     </div>
 
     <section class="section" id="limits">
-      <div class="head"><h2 class="display">Your agent's limits, in three numbers</h2><p>Your agent gets one key and you get another. Our server checks these on every order, whatever the agent says.</p></div>
+      <div class="head"><h2 class="display">Your agent's limits, in three numbers</h2><p>You set them when you connect your agent. Our server checks them on every order, whatever the agent says.</p></div>
       <div class="numbers">
         <div class="num"><p class="num__big">$150</p><h3>It can't overspend.</h3><p>Set a per-order cap, a monthly budget and the aisles it may shop. Anything outside them waits for you.</p></div>
-        <div class="num"><p class="num__big num__big--stop">0</p><h3>Orders it can approve itself.</h3><p>Approving a held order or raising a limit needs your key. The agent's key can't, so there is nothing to talk it into.</p></div>
+        <div class="num"><p class="num__big num__big--stop">0</p><h3>Orders it can approve itself.</h3><p>Held orders wait for you to tap Approve in an email, and only you can raise a limit. Your agent can't do either, so there is nothing to talk it into.</p></div>
         <div class="num"><p class="num__big">$0.00</p><h3>Between quote and charge.</h3><p>The price your agent is quoted is the price you're charged. Every box, skip and change is in a log you can both read.</p></div>
       </div>
     </section>
