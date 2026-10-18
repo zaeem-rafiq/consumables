@@ -43,9 +43,9 @@ You must give us accurate account, delivery and payment information and keep it 
 
 ## 4. Prices, quotes and taxes
 
-- **The quote is the charge.** Before an order is placed, the Service shows the item prices, any delivery fee and estimated tax. The amount charged for that order will not exceed the quoted total. [LAWYER: tax is calculated by Stripe Tax at the time of the quote; confirm wording if the final tax can differ by a few cents.]
+- **The quote is the most you'll pay.** Before an order is placed, the Service shows the item prices, any delivery fee and the most tax the order could carry. The amount charged for that order will never exceed the quoted total. For deliveries to Arkansas, the quote includes tax at a rate at or above the highest combined Arkansas rate, and we then charge the exact tax due for your address, which is usually less. Where we don't collect sales tax, no tax is quoted or charged.
 - Prices can change. A price change applies to orders quoted after the change. For subscriptions, see section 5.
-- We collect sales tax where required.
+- We collect sales tax where we are required to. Today that is on deliveries to Arkansas.
 - Prices are in US dollars.
 - If we list an item at an obviously wrong price because of an error, we may cancel the order and refund you in full, even after you've been charged.
 
