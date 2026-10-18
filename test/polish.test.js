@@ -54,3 +54,27 @@ test('skipping one item leaves it out of the next delivery only', async () => {
   assert.deepEqual(orders[0].lines.map((l) => l.sku), ['TP-2PLY-30']);
   assert.deepEqual(orders[1].lines.map((l) => l.sku).sort(), ['PT-2PLY-12', 'TP-2PLY-30']);
 });
+
+test('returns: not before purchase, one of two boxes, within 30 days of delivery', async () => {
+  const { Store } = await import('../src/store.js');
+  const store = new Store();
+  const { api_key, account } = store.createAccount({ name: 'R', email: 'r@example.com' });
+  const owner = { accountId: account.id, role: 'owner' };
+  const agent = store.authenticate(api_key);
+  store.acceptTerms(owner);
+  await store.addPaymentMethod(owner, { token: 'pm_card_visa' });
+  store.addAddress(owner, { name: 'R', line1: '1 A St', city: 'Bentonville', region: 'AR', postal_code: '72712' });
+  const o = await store.createOrder(agent, { items: [{ sku: 'TRASH-13G-90', quantity: 2 }] });
+  assert.throws(() => store.reportProblem(agent, o.id, { kind: 'return' }), /not been bought/);
+  await store.advanceClock(agent, { days: 1 });
+  await assert.rejects(store.cancelOrder(agent, o.id), (e) => /kind 'return'/.test(e.hint));
+  const c = store.reportProblem(agent, o.id, { kind: 'return', skus: ['TRASH-13G-90'], quantities: { 'TRASH-13G-90': 1 } });
+  assert.deepEqual(c.quantities, { 'TRASH-13G-90': 1 });
+  assert.equal(c.value_cents, Math.round(o.lines.find((l) => l.sku === 'TRASH-13G-90').line_total_cents / 2));
+  assert.match(c.what_happens_next, /return label/);
+  assert.throws(() => store.reportProblem(agent, o.id, { kind: 'return', quantities: { 'TRASH-13G-90': 3 } }), /quantities/);
+  const late = await store.createOrder(agent, { items: [{ sku: 'PT-2PLY-12', quantity: 1 }] });
+  await store.advanceClock(agent, { days: 40 });
+  assert.equal(store.getOrder(agent, late.id).shipment.status, 'delivered');
+  assert.throws(() => store.reportProblem(agent, late.id, { kind: 'return' }), /30 days/);
+});

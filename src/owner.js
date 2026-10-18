@@ -172,7 +172,7 @@ const ORDER_STATE = (o) => {
 const stateLine = (o) => { const [label, tone] = ORDER_STATE(o); return `<span class="status-line${tone ? ` status-line--${tone}` : ''}"><i aria-hidden="true"></i>${esc(label)}</span>`; };
 const itemsText = (lines, n = 3) => lines.slice(0, n).map((l) => (l.quantity > 1 ? `${l.name} × ${l.quantity}` : l.name)).join(', ') + (lines.length > n ? `, +${lines.length - n} more` : '');
 const CASE = { open: ['Open', 'warn'], resend_sent: ['Replacement sent', 'go'], refunded: ['Refunded', 'go'], closed: ['Closed', ''] };
-const KIND = { never_arrived: 'Never arrived', damaged: 'Arrived damaged', wrong_item: 'Wrong item', missing_item: 'Missing item', charged_wrong: 'Charged wrong', other: 'Other problem' };
+const KIND = { never_arrived: 'Never arrived', damaged: 'Arrived damaged', wrong_item: 'Wrong item', missing_item: 'Missing item', charged_wrong: 'Charged wrong', return: 'Sending back', other: 'Other problem' };
 
 /** The owner's page: what needs them, what's coming, then settings. */
 export function ownerPage({ account, approvals, addresses, paymentMethods, grants, orders, cases, subscriptions = [], testMode, flash, developerKey }) {

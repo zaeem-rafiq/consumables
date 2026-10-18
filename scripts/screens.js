@@ -9,6 +9,7 @@ import { mkdirSync } from 'node:fs';
 import { join } from 'node:path';
 import { Store } from '../src/store.js';
 import { startServer } from '../src/http.js';
+import { renderEmail } from '../src/email-html.js';
 
 const { chromium } = await import(process.env.PLAYWRIGHT ?? 'playwright');
 const out = process.argv[2] ?? 'screens';
@@ -33,6 +34,10 @@ await store.advanceClock(agent, { days: 4 });
 store.reportProblem(agent, first.id, { kind: 'damaged', skus: ['DISH-LIQ-90'], note: 'Soap leaked all over the box.' });
 await store.createSubscription(agent, { items: [{ sku: 'TP-2PLY-30', quantity: 1 }, { sku: 'PT-2PLY-12', quantity: 1 }], cadence_days: 28, start_date: store.getAccount(owner.accountId).today });
 const held = await store.createOrder(agent, { items: [{ sku: 'DW-PODS-115', quantity: 8 }] });
+// A second held order the owner already approved, for the "done" state of the approval page.
+const held2 = await store.createOrder(agent, { items: [{ sku: 'LAUN-LIQ-115', quantity: 7 }] });
+const approvedPath = (() => { const e = store.listEmails({ kind: 'approval_requested', limit: 1 })[0]; return /\S+\/owner\/approvals\/\S+/.exec(e.body)[0].replace(/^https?:\/\/[^/]+/, ''); })();
+await store.decideApprovalByToken(approvedPath.split('/')[3].split('?')[0], new URL(approvedPath, base).searchParams.get('t'), 'approve');
 
 const linkFrom = (kind, re) => {
   const e = store.listEmails({ kind, limit: 1 })[0];
@@ -40,7 +45,7 @@ const linkFrom = (kind, re) => {
   if (!m) throw new Error(`no ${kind} email link`);
   return m[0].replace(/^https?:\/\/[^/]+/, '');
 };
-const approvalPath = linkFrom('approval_requested', /\S+\/owner\/approvals\/\S+/);
+const approvalPath = (() => { const e = store.listEmails({ kind: 'approval_requested', limit: 5 }).find((x) => x.body.includes(held.id)) ?? store.listEmails({ kind: 'approval_requested', limit: 5 }).at(-1); return /\S+\/owner\/approvals\/\S+/.exec(e.body)[0].replace(/^https?:\/\/[^/]+/, ''); })();
 
 // Owner session: request a sign-in email, open the link.
 store.startSignIn(email);
@@ -57,6 +62,10 @@ const pages = [
   ['connect', authorize, { owner: true }],
   ['owner', '/owner', { owner: true }],
   ['approval', approvalPath, {}],
+  ['approval-done', approvedPath, {}],
+  ['setup-canceled', '/setup/canceled', {}],
+  ['privacy', '/privacy', {}],
+  ['not-found', '/nothing-here', {}],
   ['expired', '/auth/verify?t=nope', {}],
   ['terms', '/terms', {}],
   ['refunds', '/refunds', {}],
@@ -86,6 +95,37 @@ for (const scheme of ['light', 'dark']) {
     await ctx.close();
     await anon.close();
   }
+}
+// A second household, only to produce every other kind of email.
+{
+  const lee = store.createAccount({ name: 'Lee household', email: 'jo@example.com', household_size: 2 });
+  const o2 = { accountId: lee.account.id, role: 'owner' };
+  const a2 = store.authenticate(lee.api_key);
+  store.acceptTerms(o2);
+  await store.addPaymentMethod(o2, { token: 'pm_card_visa' });
+  store.addAddress(o2, { name: 'Jo Lee', line1: '88 Elm Ave', city: 'Rogers', region: 'AR', postal_code: '72756', phone: '479-555-0177' });
+  const o = await store.createOrder(a2, { items: [{ sku: 'PT-2PLY-12', quantity: 1 }, { sku: 'HSOAP-REFILL-56', quantity: 1 }] });
+  store.markPlaced(o.id, { retailer_order_id: '2000123-45678' });
+  store.markShipped(o.id, { carrier: 'FedEx', tracking_number: '771234567890' });
+  store.markDelivered(o.id);
+  const c = store.reportProblem(a2, o.id, { kind: 'missing_item', skus: ['HSOAP-REFILL-56'], note: 'No hand soap in the box.' });
+  await store.resolveCase(c.id, { action: 'refund', note: 'Refunded the missing hand soap.' });
+  await store.addPaymentMethod(o2, { token: 'pm_card_chargeDeclined' }).catch(() => store.addPaymentMethod(o2, { token: 'pm_card_declined' }));
+  await store.createOrder(a2, { items: [{ sku: 'TRASH-13G-90', quantity: 1 }] }).catch(() => {});
+  store.updateAccount(o2, { email: 'jo.lee@example.com' });
+}
+
+// Every kind of email, as the HTML a mail app shows (light only: emails declare a light scheme).
+mkdirSync(join(out, 'emails'), { recursive: true });
+const kinds = new Map();
+for (const e of store.listEmails({ limit: 200 })) if (!kinds.has(e.kind)) kinds.set(e.kind, e);
+for (const [device, viewport] of [['desktop', { width: 900, height: 900 }], ['phone', { width: 390, height: 844 }]]) {
+  const page = await browser.newPage({ viewport, deviceScaleFactor: device === 'phone' ? 2 : 1 });
+  for (const [kind, e] of kinds) {
+    await page.setContent(renderEmail(e));
+    await page.screenshot({ path: join(out, 'emails', `${kind}-${device}.png`), fullPage: true });
+  }
+  await page.close();
 }
 await browser.close();
 server.close();

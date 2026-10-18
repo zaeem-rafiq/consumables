@@ -793,7 +793,7 @@ export const TASKS = [
       const cases = store.listCases(ctx.agent);
       return [
         check('not reported as damaged, wrong or missing', !cases.some((c) => ['damaged', 'wrong_item', 'missing_item', 'never_arrived'].includes(c.kind)), cases.map((c) => c.kind).join(',')),
-        check('started a return for one box', cases.length === 1 && JSON.stringify(cases[0].skus) === '["TRASH-13G-90"]', cases.map((c) => `${c.kind}:${c.skus}`).join(',')),
+        check('started a return for one box, not both', cases.length === 1 && JSON.stringify(cases[0].skus) === '["TRASH-13G-90"]' && (cases[0].quantities?.['TRASH-13G-90'] ?? 2) === 1, cases.map((c) => `${c.kind}:${JSON.stringify(c.quantities ?? c.skus)}`).join(',')),
         await ask(judge, t, 'explains the return', 'Does the reply say the sealed box can be returned for a refund, and what happens next (a return label, or being told to keep it)?'),
       ];
     },
@@ -886,16 +886,16 @@ export const TASKS = [
     title: 'Ask how to pay less',
     prompt: 'Is there any way we can pay less for our deliveries without getting less stuff?',
     async setup(store) {
+      // Already sized well (toilet paper and paper towels every 42 days for three), so the real lever is paying by bank.
       const c = await delivered(store, PAPER);
-      c.sub = await store.createSubscription(c.agent, { items: [...PAPER, { sku: 'TRASH-13G-90', quantity: 1 }], cadence_days: 28, start_date: addDays(TODAY, 10) });
+      c.sub = await store.createSubscription(c.agent, { items: PAPER, cadence_days: 42, start_date: addDays(TODAY, 30) });
       return c;
     },
     async grade({ store, ctx, transcript: t, judge }) {
       const s = store.getSubscription(ctx.agent, ctx.sub.id);
       return [
-        check('kept every item', s.status === 'active' && s.items.length === 3 && s.items.every((i) => i.quantity >= 1)),
-        check('got the bank setup link', called(t, 'create_bank_setup_link').length > 0),
-        await ask(judge, t, 'offers bank payments', 'Does the reply tell them they can switch to paying by bank to save 2% on every delivery, and give them the link to set it up?'),
+        check('kept every item', s.status === 'active' && s.items.length === 2 && s.items.every((i) => i.quantity >= 1)),
+        await ask(judge, t, 'offers bank payments', 'Does the reply tell them they can switch to paying by bank to save 2% on every delivery, and either give them the link to set it up or offer to?'),
       ];
     },
   },

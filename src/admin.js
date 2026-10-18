@@ -9,7 +9,7 @@ import { layout, esc, usd, day } from './ui.js';
 
 const addressText = (a) => [a.name, a.line1, a.line2, `${a.city}, ${a.region} ${a.postal_code}`, a.phone].filter(Boolean).join('\n');
 const signOut = '<a href="/admin/emails">Email log</a><form method="post" action="/admin/logout"><button class="linkbtn">Sign out</button></form>';
-const KIND = { never_arrived: 'Never arrived', damaged: 'Damaged', wrong_item: 'Wrong item', missing_item: 'Missing item', charged_wrong: 'Charged wrong', other: 'Other' };
+const KIND = { never_arrived: 'Never arrived', damaged: 'Damaged', wrong_item: 'Wrong item', missing_item: 'Missing item', charged_wrong: 'Charged wrong', return: 'Return', other: 'Other' };
 
 export function adminLoginPage({ error } = {}) {
   return layout('Operator sign-in', `<div class="stack">
